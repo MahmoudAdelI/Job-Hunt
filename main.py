@@ -25,14 +25,13 @@ from bs4 import BeautifulSoup
 # Configuration — edit these to customise your alerts
 # ---------------------------------------------------------------------------
 
-# LinkedIn search queries (first page only, last 24 hours)
+# LinkedIn search queries with explicit location and remote filters
 SEARCH_QUERIES = [
-    ".NET developer Egypt",
-    ".NET developer Cairo",
-    "ASP.NET backend Egypt",
-    "C# fullstack Egypt",
-    "C# developer Cairo",
-    "remote .NET developer",
+    {"keywords": ".NET developer", "location": "Egypt"},
+    {"keywords": "ASP.NET backend", "location": "Egypt"},
+    {"keywords": "C# fullstack", "location": "Egypt"},
+    {"keywords": "C# developer", "location": "Cairo, Egypt"},
+    {"keywords": ".NET developer", "location": "Worldwide", "f_WT": "2"},
 ]
 
 # A job must match at least ONE keyword from EACH group
@@ -46,6 +45,17 @@ EGYPT_LOCATIONS = [
     "heliopolis", "mansoura", "new cairo", "sheikh zayed",
 ]
 REMOTE_KEYWORDS = ["remote", "work from home", "wfh", "anywhere", "worldwide"]
+
+# Foreign locations to explicitly exclude (USA, UK, India, US states, etc.)
+EXCLUDED_LOCATIONS = [
+    "united states", "usa", "u.s.", "us", "america",
+    "canada", "india", "united kingdom", "uk", "germany", "france",
+    "australia", "poland", "brazil", "spain", "italy", "netherlands",
+    "mexico", "philippines", "pakistan", "nigeria",
+    "california", "texas", "florida", "new york", "washington", "georgia",
+    "illinois", "virginia", "pennsylvania", "ohio", "north carolina",
+    "ca", "ny", "tx", "fl", "wa", "il", "ma", "va", "nc", "ga", "nj", "pa", "oh", "az", "co"
+]
 
 # Google search queries for LinkedIn posts (job postings shared as posts)
 # These use site:linkedin.com/posts with hiring-related terms
@@ -92,16 +102,20 @@ HEADERS = {
 # ========================== URL BUILDING ===================================
 
 
-def build_linkedin_url(query: str) -> str:
+def build_linkedin_url(query: dict) -> str:
     """
-    Build a LinkedIn job search URL for the given query.
+    Build a LinkedIn job search URL for the given query dict.
     Filters to jobs posted in the last 24 hours (f_TPR=r86400).
     """
-    encoded = quote_plus(query)
-    return (
+    keywords = quote_plus(query.get("keywords", ""))
+    location = quote_plus(query.get("location", ""))
+    url = (
         f"https://www.linkedin.com/jobs/search/"
-        f"?keywords={encoded}&f_TPR=r86400"
+        f"?keywords={keywords}&location={location}&f_TPR=r86400"
     )
+    if "f_WT" in query:
+        url += f"&f_WT={query['f_WT']}"
+    return url
 
 
 # ========================== JOB LISTING SCRAPING ===========================
@@ -429,21 +443,28 @@ def matches_location(job: dict) -> bool:
     """
     Check if a job is located in Egypt or is a remote position.
 
-    Accepts jobs where the location or title contains:
-    - Any Egyptian city/area from EGYPT_LOCATIONS, OR
-    - Any remote work indicator from REMOTE_KEYWORDS
-
-    This filters out jobs from other countries (e.g., USA, India).
+    1. Accepts jobs explicitly in Egyptian locations.
+    2. Rejects jobs in foreign countries/states (e.g. USA, UK, India, CA, NY).
+    3. Accepts remote/worldwide jobs that do not belong to an excluded foreign country.
     """
-    text = " ".join([
-        job.get("title", ""),
-        job.get("location", ""),
-    ]).lower()
+    title = job.get("title", "").lower()
+    location = job.get("location", "").lower()
+    full_text = f"{title} {location}"
 
-    in_egypt = any(loc in text for loc in EGYPT_LOCATIONS)
-    is_remote = any(kw in text for kw in REMOTE_KEYWORDS)
+    # 1. Explicit Egypt location match
+    in_egypt = any(loc in full_text for loc in EGYPT_LOCATIONS)
+    if in_egypt:
+        return True
 
-    return in_egypt or is_remote
+    # 2. Reject foreign countries or US states
+    for foreign_term in EXCLUDED_LOCATIONS:
+        pattern = rf"(?<!\w){re.escape(foreign_term)}(?!\w)"
+        if re.search(pattern, location):
+            return False
+
+    # 3. Check if remote or worldwide
+    is_remote = any(kw in full_text for kw in REMOTE_KEYWORDS)
+    return is_remote
 
 
 # ========================== DEDUPLICATION ==================================
