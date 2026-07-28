@@ -45,7 +45,7 @@ jobs:
           if ! git diff --cached --quiet; then
             git commit -m "chore: update seen_jobs.json [skip ci]"
             git pull --rebase origin main || git pull --rebase origin master || true
-            git push || echo "::warning::Push failed — seen_jobs.json update not persisted this run"
+            git push || echo "::warning::Push failed â€” seen_jobs.json update not persisted this run"
           else
-            echo "No changes to seen_jobs.json — skipping commit"
+            echo "No changes to seen_jobs.json â€” skipping commit"
           fi
