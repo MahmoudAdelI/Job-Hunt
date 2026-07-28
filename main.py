@@ -263,7 +263,7 @@ def fetch_linkedin_posts(query: str, attempt: int = 1) -> list[dict]:
         **HEADERS,
         "Origin": "https://html.duckduckgo.com",
         "Referer": "https://html.duckduckgo.com/",
-        "Content-Type": "application/x-www-form-request",
+        "Content-Type": "application/x-www-form-urlencoded",
     }
 
     try:
@@ -286,61 +286,39 @@ def fetch_linkedin_posts(query: str, attempt: int = 1) -> list[dict]:
 def _parse_ddg_results(html: str, query: str) -> list[dict]:
     """
     Extract LinkedIn post links and snippets from DuckDuckGo HTML search results.
-    Only keeps results that link to linkedin.com/posts/.
+    Only keeps results that link to linkedin.com/posts/, /feed/update/, or /pulse/.
     """
     soup = BeautifulSoup(html, "lxml")
     posts: list[dict] = []
 
-    # DuckDuckGo HTML result items are inside div class="result" or "results_links"
-    results = soup.find_all("div", class_=re.compile(r"result\b"))
-
-    for res in results:
-        try:
-            link_el = (
-                res.find("a", class_=re.compile(r"result__a"))
-                or res.find("a", href=True)
-            )
-            if not link_el:
-                continue
-
-            href = link_el["href"]
-            clean_url = _extract_clean_linkedin_url(href)
-            if not clean_url:
-                continue
-
-            title_text = link_el.get_text(strip=True)
-
-            snippet_el = (
-                res.find("a", class_=re.compile(r"result__snippet"))
-                or res.find("div", class_=re.compile(r"result__snippet"))
-                or res.find("td", class_="result-snippet")
-            )
-            snippet = snippet_el.get_text(strip=True) if snippet_el else title_text
-
-            author = _extract_author_from_url(clean_url)
-            if not author and title_text:
-                author = title_text.split(" - ")[0].split(" on ")[0].strip()
-
-            posts.append({
-                "author": author or "Unknown",
-                "snippet": snippet[:200] if snippet else "",
-                "url": clean_url,
-            })
-        except Exception as exc:
-            logger.debug("Failed to parse a DuckDuckGo result: %s", exc)
+    # DuckDuckGo HTML search results use <a> tags with class result__a or result__url
+    for link in soup.find_all("a", href=True):
+        href = link["href"]
+        clean_url = _extract_clean_linkedin_url(href)
+        if not clean_url:
             continue
 
-    # Fallback: find any a tags linking to linkedin.com/posts/
-    if not posts:
-        for link in soup.find_all("a", href=True):
-            clean_url = _extract_clean_linkedin_url(link["href"])
-            if clean_url:
-                text = link.get_text(strip=True)
-                posts.append({
-                    "author": _extract_author_from_url(clean_url),
-                    "snippet": text[:200] if text else "",
-                    "url": clean_url,
-                })
+        title_text = link.get_text(strip=True)
+
+        # Look for snippet in parent result container
+        parent = link.find_parent(["div", "td", "tr"])
+        snippet_el = (
+            parent.find("a", class_=re.compile(r"snippet"))
+            or parent.find("div", class_=re.compile(r"snippet"))
+            or parent.find("td", class_=re.compile(r"snippet"))
+        ) if parent else None
+
+        snippet = snippet_el.get_text(strip=True) if snippet_el else title_text
+
+        author = _extract_author_from_url(clean_url)
+        if not author and title_text:
+            author = title_text.split(" - ")[0].split(" on ")[0].strip()
+
+        posts.append({
+            "author": author or "Unknown",
+            "snippet": snippet[:200] if snippet else "",
+            "url": clean_url,
+        })
 
     # Deduplicate by URL within this batch
     seen = set()
