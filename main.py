@@ -51,31 +51,17 @@ ROLE_KEYWORDS = [
     "junior", "mid", "consultant", "programmer", "coder",
 ]
 
-# Location filter — only keep jobs in these Egyptian locations OR remote jobs
+# Location Allowlist — ONLY keep jobs that match Egypt or Worldwide Remote
 EGYPT_LOCATIONS = [
     "egypt", "cairo", "giza", "maadi", "smart village",
     "october", "6th of october", "6 october", "nasr city",
     "heliopolis", "mansoura", "new cairo", "sheikh zayed",
 ]
-REMOTE_KEYWORDS = ["remote", "work from home", "wfh", "anywhere", "worldwide"]
 
-# Foreign locations to explicitly exclude (USA, Gulf countries, Europe, Asia, etc.)
-EXCLUDED_LOCATIONS = [
-    # Gulf & Middle East (non-Egypt)
-    "saudi arabia", "saudi", "ksa", "riyadh", "jeddah", "dammam", "khobar",
-    "united arab emirates", "uae", "dubai", "abu dhabi", "sharjah",
-    "qatar", "doha", "kuwait", "bahrain", "manama", "oman", "muscat",
-    "jordan", "amman", "lebanon", "beirut",
-    # Americas
-    "united states", "usa", "u.s.", "us", "america", "canada", "mexico", "brazil",
-    # Europe
-    "united kingdom", "uk", "germany", "france", "australia", "poland", "spain", "italy", "netherlands",
-    # Asia & Africa (non-Egypt)
-    "india", "philippines", "pakistan", "nigeria", "bangladesh", "sri lanka", "nepal",
-    # US States & Codes
-    "california", "texas", "florida", "new york", "washington", "georgia",
-    "illinois", "virginia", "pennsylvania", "ohio", "north carolina",
-    "ca", "ny", "tx", "fl", "wa", "il", "ma", "va", "nc", "ga", "nj", "pa", "oh", "az", "co"
+WORLDWIDE_REMOTE_KEYWORDS = [
+    "worldwide", "anywhere", "work from anywhere", "global",
+    "remote (worldwide)", "remote - worldwide", "remote - anywhere",
+    "remote (anywhere)", "worldwide remote", "global remote",
 ]
 
 # DuckDuckGo search queries for LinkedIn posts/updates
@@ -451,33 +437,36 @@ def matches_location(job: dict) -> bool:
     """
     title = job.get("title", "").lower()
     location = job.get("location", "").lower()
+def matches_location(job: dict) -> bool:
+    """
+    STRICT INCLUSION MODEL (Allowlist):
+
+    Only accepts a job if it:
+    1. Is explicitly located in Egypt (EGYPT_LOCATIONS) or on eg.linkedin.com domain, OR
+    2. Is explicitly tagged as Worldwide/Anywhere Remote (WORLDWIDE_REMOTE_KEYWORDS).
+
+    Automatically rejects all other locations (Saudi, UAE, USA, UK, India, etc.)
+    without needing any blacklist rules.
+    """
+    title = job.get("title", "").lower()
+    location = job.get("location", "").lower()
     url = job.get("url", "").lower()
     full_text = f"{title} {location}"
 
-    # 1. Explicit Egypt location match -> ALWAYS KEEP
-    in_egypt = any(loc in full_text for loc in EGYPT_LOCATIONS)
-    if in_egypt:
+    # 1. Egypt check (city/region name or eg.linkedin.com domain)
+    is_egypt_city = any(loc in full_text for loc in EGYPT_LOCATIONS)
+    is_egypt_domain = "eg.linkedin.com" in url
+
+    if is_egypt_city or is_egypt_domain:
         return True
 
-    # 2. Reject foreign country subdomains (e.g. sa.linkedin.com, ae.linkedin.com, in.linkedin.com, bd.linkedin.com)
-    # eg.linkedin.com and www.linkedin.com are allowed
-    from urllib.parse import urlparse
-    parsed_url = urlparse(url)
-    domain = parsed_url.netloc.lower()
-    if domain and domain.endswith(".linkedin.com"):
-        subdomain = domain.replace(".linkedin.com", "")
-        if len(subdomain) == 2 and subdomain != "eg":
-            return False
+    # 2. Worldwide / Anywhere Remote check
+    is_worldwide_remote = any(kw in full_text for kw in WORLDWIDE_REMOTE_KEYWORDS)
+    if is_worldwide_remote:
+        return True
 
-    # 3. Reject foreign countries, cities, or US states
-    for foreign_term in EXCLUDED_LOCATIONS:
-        pattern = rf"(?<!\w){re.escape(foreign_term)}(?!\w)"
-        if re.search(pattern, full_text):
-            return False
-
-    # 4. Check if remote or worldwide
-    is_remote = any(kw in full_text for kw in REMOTE_KEYWORDS)
-    return is_remote
+    # Reject everything else
+    return False
 
 
 # ========================== DEDUPLICATION ==================================
