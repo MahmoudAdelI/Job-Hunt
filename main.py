@@ -28,14 +28,24 @@ from bs4 import BeautifulSoup
 # LinkedIn search queries (first page only, last 24 hours)
 SEARCH_QUERIES = [
     ".NET developer Egypt",
+    ".NET developer Cairo",
     "ASP.NET backend Egypt",
     "C# fullstack Egypt",
+    "C# developer Cairo",
     "remote .NET developer",
 ]
 
 # A job must match at least ONE keyword from EACH group
 TECH_KEYWORDS = ["c#", ".net", "asp.net", "dotnet"]
 ROLE_KEYWORDS = ["developer", "backend", "fullstack", "full-stack", "engineer", "software"]
+
+# Location filter — only keep jobs in these Egyptian locations OR remote jobs
+EGYPT_LOCATIONS = [
+    "egypt", "cairo", "giza", "maadi", "smart village",
+    "october", "6th of october", "6 october", "nasr city",
+    "heliopolis", "mansoura", "new cairo", "sheikh zayed",
+]
+REMOTE_KEYWORDS = ["remote", "work from home", "wfh", "anywhere", "worldwide"]
 
 # Deduplication settings
 SEEN_JOBS_FILE = "seen_jobs.json"
@@ -229,6 +239,27 @@ def matches_keywords(job: dict) -> bool:
     return has_tech and has_role
 
 
+def matches_location(job: dict) -> bool:
+    """
+    Check if a job is located in Egypt or is a remote position.
+
+    Accepts jobs where the location or title contains:
+    - Any Egyptian city/area from EGYPT_LOCATIONS, OR
+    - Any remote work indicator from REMOTE_KEYWORDS
+
+    This filters out jobs from other countries (e.g., USA, India).
+    """
+    text = " ".join([
+        job.get("title", ""),
+        job.get("location", ""),
+    ]).lower()
+
+    in_egypt = any(loc in text for loc in EGYPT_LOCATIONS)
+    is_remote = any(kw in text for kw in REMOTE_KEYWORDS)
+
+    return in_egypt or is_remote
+
+
 # ========================== DEDUPLICATION ==================================
 
 
@@ -398,6 +429,8 @@ def main() -> None:
 
         for job in jobs:
             if not matches_keywords(job):
+                continue
+            if not matches_location(job):
                 continue
             total_passed_filter += 1
 

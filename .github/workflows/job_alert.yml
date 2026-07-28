@@ -1,9 +1,9 @@
 name: Job Alert
 
-# Run every 2 hours, or manually via workflow_dispatch
+# Run every 20 minutes, or manually via workflow_dispatch
 on:
   schedule:
-    - cron: '0 */2 * * *'
+    - cron: '*/20 * * * *'
   workflow_dispatch:
 
 # Prevent overlapping runs from causing push conflicts
