@@ -105,12 +105,13 @@ def build_linkedin_url(query: dict) -> str:
     """
     Build a LinkedIn job search URL for the given query dict.
     Filters to jobs posted in the last 24 hours (f_TPR=r86400).
+    Includes geoId=102007122 for Egypt location searches.
     """
     keywords = quote_plus(query.get("keywords", ""))
     location = quote_plus(query.get("location", ""))
     url = (
         f"https://www.linkedin.com/jobs/search/"
-        f"?keywords={keywords}&location={location}&f_TPR=r86400"
+        f"?keywords={keywords}&location={location}&geoId=102007122&f_TPR=r86400"
     )
     if "f_WT" in query:
         url += f"&f_WT={query['f_WT']}"
@@ -397,20 +398,51 @@ def _keyword_pattern(keyword: str) -> re.Pattern:
     return re.compile(rf"(?<!\w){escaped}(?!\w)", re.IGNORECASE)
 
 
+def fetch_job_description(job_url: str) -> tuple[str, str]:
+    """
+    Fetch full job description and snippet using LinkedIn's public guest API.
+    URL format: https://www.linkedin.com/jobs/view/{job_id} -> API: /jobs-guest/jobs/api/jobPosting/{job_id}
+
+    Returns tuple of (description_text, snippet_preview).
+    """
+    job_id_match = re.search(r"/view/(?:[^\-/]+-)?(\d+)", job_url) or re.search(r"(\d{8,})", job_url)
+    if not job_id_match:
+        return "", ""
+
+    job_id = job_id_match.group(1)
+    api_url = f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}"
+
+    try:
+        resp = requests.get(api_url, headers=HEADERS, timeout=10)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "lxml")
+            desc_el = (
+                soup.find("div", class_=re.compile(r"show-more-less-html__markup"))
+                or soup.find("section", class_=re.compile(r"description"))
+                or soup
+            )
+            text = desc_el.get_text(separator=" ", strip=True) if desc_el else ""
+            snippet = text[:200] if text else ""
+            return text, snippet
+    except Exception as exc:
+        logger.debug("Failed to fetch description for job %s: %s", job_id, exc)
+
+    return "", ""
+
+
 def matches_keywords(job: dict) -> bool:
     """
-    Check if a job matches the keyword filter criteria.
+    Check if a job matches keyword filter criteria.
 
-    A job passes if the combined text (title + company + location)
+    A job passes if combined text (title + company + location + description)
     contains at least one keyword from TECH_KEYWORDS
     AND at least one keyword from ROLE_KEYWORDS.
-
-    Matching is case-insensitive and word-boundary-aware.
     """
     text = " ".join([
         job.get("title", ""),
         job.get("company", ""),
         job.get("location", ""),
+        job.get("description", ""),
     ]).lower()
 
     has_tech = any(_keyword_pattern(kw).search(text) for kw in TECH_KEYWORDS)
@@ -530,7 +562,7 @@ def get_telegram_credentials() -> tuple[str, str]:
 def format_job_message(job: dict) -> str:
     """
     Format a job listing into a Telegram-friendly message.
-    Uses emoji for visual appeal.
+    Includes snippet from full description if available.
     """
     parts = [
         "🆕 <b>New .NET Job Alert!</b>",
@@ -541,6 +573,12 @@ def format_job_message(job: dict) -> str:
 
     if job.get("location"):
         parts.append(f"📍 {_escape_html(job['location'])}")
+
+    snippet = job.get("snippet", "")
+    if snippet:
+        # Keep snippet concise for Telegram
+        clean_snippet = snippet[:180] + ("..." if len(snippet) > 180 else "")
+        parts.append(f"📝 <i>{_escape_html(clean_snippet)}</i>")
 
     parts.append(f"🔗 <a href=\"{job['url']}\">View Job</a>")
 
@@ -640,15 +678,22 @@ def main() -> None:
         total_fetched += len(jobs)
 
         for job in jobs:
-            if not matches_keywords(job):
-                continue
             if not matches_location(job):
                 continue
-            total_passed_filter += 1
 
             if job["url"] in seen_urls:
                 continue
 
+            # Fetch full description for unseen location-matching jobs
+            desc, snippet = fetch_job_description(job["url"])
+            job["description"] = desc
+            job["snippet"] = snippet
+
+            if not matches_keywords(job):
+                logger.debug("Job failed keyword filter: %s", job["title"])
+                continue
+
+            total_passed_filter += 1
             new_jobs.append(job)
             seen_urls.add(job["url"])
 
