@@ -25,7 +25,7 @@ from bs4 import BeautifulSoup
 # Configuration — edit these to customise your alerts
 # ---------------------------------------------------------------------------
 
-# Expanded LinkedIn search queries (8 variations for maximum coverage)
+# LinkedIn search queries for Egypt
 SEARCH_QUERIES = [
     {"keywords": ".NET", "location": "Egypt"},
     {"keywords": "C#", "location": "Egypt"},
@@ -33,8 +33,7 @@ SEARCH_QUERIES = [
     {"keywords": "Software Engineer .NET", "location": "Egypt"},
     {"keywords": "Full Stack .NET", "location": "Egypt"},
     {"keywords": "Backend .NET", "location": "Egypt"},
-    {"keywords": ".NET developer", "location": "Worldwide", "f_WT": "2"},
-    {"keywords": "C# developer", "location": "Worldwide", "f_WT": "2"},
+    {"keywords": "C# developer", "location": "Cairo, Egypt"},
 ]
 
 # Expanded Tech Keywords
@@ -51,25 +50,19 @@ ROLE_KEYWORDS = [
     "junior", "mid", "consultant", "programmer", "coder",
 ]
 
-# Location Allowlist — ONLY keep jobs that match Egypt or Worldwide Remote
+# Egypt Location Allowlist — ONLY keep jobs that match Egypt
 EGYPT_LOCATIONS = [
     "egypt", "cairo", "giza", "maadi", "smart village",
     "october", "6th of october", "6 october", "nasr city",
     "heliopolis", "mansoura", "new cairo", "sheikh zayed",
 ]
 
-WORLDWIDE_REMOTE_KEYWORDS = [
-    "worldwide", "anywhere", "work from anywhere", "global",
-    "remote (worldwide)", "remote - worldwide", "remote - anywhere",
-    "remote (anywhere)", "worldwide remote", "global remote",
-]
-
-# DuckDuckGo search queries for LinkedIn posts/updates
+# DuckDuckGo search queries for LinkedIn posts (using site:linkedin.com/posts)
 POST_SEARCH_QUERIES = [
-    'site:linkedin.com ".NET" developer Egypt hiring',
-    'site:linkedin.com "C#" developer Cairo hiring',
-    'site:linkedin.com dotnet remote Egypt hiring',
-    'site:linkedin.com "ASP.NET" Egypt hiring',
+    'site:linkedin.com/posts ".NET" developer Egypt hiring',
+    'site:linkedin.com/posts "C#" developer Cairo hiring',
+    'site:linkedin.com/posts dotnet Egypt hiring',
+    'site:linkedin.com/posts "ASP.NET" Egypt hiring',
 ]
 
 # Deduplication settings
@@ -439,34 +432,20 @@ def matches_location(job: dict) -> bool:
     location = job.get("location", "").lower()
 def matches_location(job: dict) -> bool:
     """
-    STRICT INCLUSION MODEL (Allowlist):
+    EGYPT ONLY ALLOWLIST:
 
-    Only accepts a job if it:
-    1. Is explicitly located in Egypt (EGYPT_LOCATIONS) or on eg.linkedin.com domain, OR
-    2. Is explicitly tagged as Worldwide/Anywhere Remote (WORLDWIDE_REMOTE_KEYWORDS).
-
-    Automatically rejects all other locations (Saudi, UAE, USA, UK, India, etc.)
-    without needing any blacklist rules.
+    Only accepts a job if it is explicitly located in an Egyptian city/region
+    (EGYPT_LOCATIONS) or hosted on eg.linkedin.com domain.
     """
     title = job.get("title", "").lower()
     location = job.get("location", "").lower()
     url = job.get("url", "").lower()
     full_text = f"{title} {location}"
 
-    # 1. Egypt check (city/region name or eg.linkedin.com domain)
     is_egypt_city = any(loc in full_text for loc in EGYPT_LOCATIONS)
     is_egypt_domain = "eg.linkedin.com" in url
 
-    if is_egypt_city or is_egypt_domain:
-        return True
-
-    # 2. Worldwide / Anywhere Remote check
-    is_worldwide_remote = any(kw in full_text for kw in WORLDWIDE_REMOTE_KEYWORDS)
-    if is_worldwide_remote:
-        return True
-
-    # Reject everything else
-    return False
+    return is_egypt_city or is_egypt_domain
 
 
 # ========================== DEDUPLICATION ==================================
