@@ -59,12 +59,20 @@ EGYPT_LOCATIONS = [
 ]
 REMOTE_KEYWORDS = ["remote", "work from home", "wfh", "anywhere", "worldwide"]
 
-# Foreign locations to explicitly exclude (USA, UK, India, US states, etc.)
+# Foreign locations to explicitly exclude (USA, Gulf countries, Europe, Asia, etc.)
 EXCLUDED_LOCATIONS = [
-    "united states", "usa", "u.s.", "us", "america",
-    "canada", "india", "united kingdom", "uk", "germany", "france",
-    "australia", "poland", "brazil", "spain", "italy", "netherlands",
-    "mexico", "philippines", "pakistan", "nigeria",
+    # Gulf & Middle East (non-Egypt)
+    "saudi arabia", "saudi", "ksa", "riyadh", "jeddah", "dammam", "khobar",
+    "united arab emirates", "uae", "dubai", "abu dhabi", "sharjah",
+    "qatar", "doha", "kuwait", "bahrain", "manama", "oman", "muscat",
+    "jordan", "amman", "lebanon", "beirut",
+    # Americas
+    "united states", "usa", "u.s.", "us", "america", "canada", "mexico", "brazil",
+    # Europe
+    "united kingdom", "uk", "germany", "france", "australia", "poland", "spain", "italy", "netherlands",
+    # Asia & Africa (non-Egypt)
+    "india", "philippines", "pakistan", "nigeria", "bangladesh", "sri lanka", "nepal",
+    # US States & Codes
     "california", "texas", "florida", "new york", "washington", "georgia",
     "illinois", "virginia", "pennsylvania", "ohio", "north carolina",
     "ca", "ny", "tx", "fl", "wa", "il", "ma", "va", "nc", "ga", "nj", "pa", "oh", "az", "co"
@@ -437,25 +445,37 @@ def matches_location(job: dict) -> bool:
     Check if a job is located in Egypt or is a remote position.
 
     1. Accepts jobs explicitly in Egyptian locations.
-    2. Rejects jobs in foreign countries/states (e.g. USA, UK, India, CA, NY).
-    3. Accepts remote/worldwide jobs that do not belong to an excluded foreign country.
+    2. Rejects jobs hosted on non-Egypt country domain subdomains (sa.linkedin.com, ae.linkedin.com, etc.).
+    3. Rejects jobs in foreign countries, cities, or states (Saudi, UAE, USA, UK, India, etc.).
+    4. Accepts remote/worldwide jobs that do not belong to an excluded foreign location.
     """
     title = job.get("title", "").lower()
     location = job.get("location", "").lower()
+    url = job.get("url", "").lower()
     full_text = f"{title} {location}"
 
-    # 1. Explicit Egypt location match
+    # 1. Explicit Egypt location match -> ALWAYS KEEP
     in_egypt = any(loc in full_text for loc in EGYPT_LOCATIONS)
     if in_egypt:
         return True
 
-    # 2. Reject foreign countries or US states
-    for foreign_term in EXCLUDED_LOCATIONS:
-        pattern = rf"(?<!\w){re.escape(foreign_term)}(?!\w)"
-        if re.search(pattern, location):
+    # 2. Reject foreign country subdomains (e.g. sa.linkedin.com, ae.linkedin.com, in.linkedin.com, bd.linkedin.com)
+    # eg.linkedin.com and www.linkedin.com are allowed
+    from urllib.parse import urlparse
+    parsed_url = urlparse(url)
+    domain = parsed_url.netloc.lower()
+    if domain and domain.endswith(".linkedin.com"):
+        subdomain = domain.replace(".linkedin.com", "")
+        if len(subdomain) == 2 and subdomain != "eg":
             return False
 
-    # 3. Check if remote or worldwide
+    # 3. Reject foreign countries, cities, or US states
+    for foreign_term in EXCLUDED_LOCATIONS:
+        pattern = rf"(?<!\w){re.escape(foreign_term)}(?!\w)"
+        if re.search(pattern, full_text):
+            return False
+
+    # 4. Check if remote or worldwide
     is_remote = any(kw in full_text for kw in REMOTE_KEYWORDS)
     return is_remote
 
