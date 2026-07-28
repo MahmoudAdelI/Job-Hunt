@@ -632,28 +632,39 @@ def _escape_html(text: str) -> str:
 def send_telegram_message(text: str, token: str, chat_id: str) -> bool:
     """
     Send a message via the Telegram Bot API.
-    Returns True on success, False on failure.
+    Supports a single chat ID / channel handle or a comma-separated list of targets
+    (e.g., '12345678, @DotNetEgyptJobs').
+    Returns True if sent to at least one target, False otherwise.
     """
-    api_url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": False,
-    }
-
-    try:
-        resp = requests.post(api_url, json=payload, timeout=15)
-        if resp.status_code == 200:
-            return True
-        else:
-            logger.error(
-                "Telegram API error %d: %s", resp.status_code, resp.text[:200]
-            )
-            return False
-    except requests.RequestException as exc:
-        logger.error("Failed to send Telegram message: %s", exc)
+    targets = [cid.strip() for cid in chat_id.split(",") if cid.strip()]
+    if not targets:
+        logger.error("No valid chat IDs provided in TELEGRAM_CHAT_ID")
         return False
+
+    api_url = f"https://api.telegram.org/bot{token}/sendMessage"
+    any_success = False
+
+    for target in targets:
+        payload = {
+            "chat_id": target,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": False,
+        }
+
+        try:
+            resp = requests.post(api_url, json=payload, timeout=15)
+            if resp.status_code == 200:
+                any_success = True
+            else:
+                logger.error(
+                    "Telegram API error %d for target %s: %s",
+                    resp.status_code, target, resp.text[:200]
+                )
+        except requests.RequestException as exc:
+            logger.error("Failed to send Telegram message to %s: %s", target, exc)
+
+    return any_success
 
 
 # ========================== MAIN ORCHESTRATION =============================
