@@ -25,18 +25,31 @@ from bs4 import BeautifulSoup
 # Configuration — edit these to customise your alerts
 # ---------------------------------------------------------------------------
 
-# LinkedIn search queries with explicit location and remote filters
+# Expanded LinkedIn search queries (8 variations for maximum coverage)
 SEARCH_QUERIES = [
-    {"keywords": ".NET developer", "location": "Egypt"},
-    {"keywords": "ASP.NET backend", "location": "Egypt"},
-    {"keywords": "C# fullstack", "location": "Egypt"},
-    {"keywords": "C# developer", "location": "Cairo, Egypt"},
+    {"keywords": ".NET", "location": "Egypt"},
+    {"keywords": "C#", "location": "Egypt"},
+    {"keywords": "ASP.NET", "location": "Egypt"},
+    {"keywords": "Software Engineer .NET", "location": "Egypt"},
+    {"keywords": "Full Stack .NET", "location": "Egypt"},
+    {"keywords": "Backend .NET", "location": "Egypt"},
     {"keywords": ".NET developer", "location": "Worldwide", "f_WT": "2"},
+    {"keywords": "C# developer", "location": "Worldwide", "f_WT": "2"},
 ]
 
-# A job must match at least ONE keyword from EACH group
-TECH_KEYWORDS = ["c#", ".net", "asp.net", "dotnet"]
-ROLE_KEYWORDS = ["developer", "backend", "fullstack", "full-stack", "engineer", "software"]
+# Expanded Tech Keywords
+TECH_KEYWORDS = [
+    "c#", ".net", "asp.net", "dotnet", "dot net",
+    ".net core", "ef core", "entity framework",
+    "blazor", "web api", "microservices", "aspnet",
+]
+
+# Expanded Role Keywords
+ROLE_KEYWORDS = [
+    "developer", "backend", "back-end", "fullstack", "full-stack",
+    "engineer", "software", "architect", "lead", "senior",
+    "junior", "mid", "consultant", "programmer", "coder",
+]
 
 # Location filter — only keep jobs in these Egyptian locations OR remote jobs
 EGYPT_LOCATIONS = [
