@@ -57,13 +57,12 @@ EXCLUDED_LOCATIONS = [
     "ca", "ny", "tx", "fl", "wa", "il", "ma", "va", "nc", "ga", "nj", "pa", "oh", "az", "co"
 ]
 
-# Google search queries for LinkedIn posts (job postings shared as posts)
-# These use site:linkedin.com/posts with hiring-related terms
+# DuckDuckGo search queries for LinkedIn posts/updates
 POST_SEARCH_QUERIES = [
-    'site:linkedin.com/posts ".NET" developer Egypt hiring',
-    'site:linkedin.com/posts "C#" developer Cairo hiring',
-    'site:linkedin.com/posts dotnet remote Egypt hiring',
-    'site:linkedin.com/posts "ASP.NET" Egypt hiring',
+    'site:linkedin.com ".NET" developer Egypt hiring',
+    'site:linkedin.com "C#" developer Cairo hiring',
+    'site:linkedin.com dotnet remote Egypt hiring',
+    'site:linkedin.com "ASP.NET" Egypt hiring',
 ]
 
 # Deduplication settings
@@ -346,7 +345,7 @@ def _extract_clean_linkedin_url(href: str) -> str | None:
     """
     Extract and clean a LinkedIn post URL from a result link.
     Handles DuckDuckGo redirects (/l/?uddg=...) and Google redirects (/url?q=...).
-    Returns None if the URL is not a LinkedIn post.
+    Returns None if the URL is not a LinkedIn post/feed update/article.
     """
     from urllib.parse import urlparse, parse_qs, unquote
 
@@ -366,8 +365,13 @@ def _extract_clean_linkedin_url(href: str) -> str | None:
 
     href = unquote(href)
 
-    # Only keep LinkedIn post URLs
-    if "linkedin.com/posts/" not in href:
+    # Keep LinkedIn posts, feed updates, or pulse articles
+    is_post_link = (
+        "linkedin.com/posts/" in href
+        or "linkedin.com/feed/update/" in href
+        or "linkedin.com/pulse/" in href
+    )
+    if not is_post_link:
         return None
 
     # Strip tracking query params
