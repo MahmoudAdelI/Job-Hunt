@@ -227,76 +227,106 @@ def _extract_job_from_card(card) -> dict | None:
     }
 
 
-# ========================== LINKEDIN POST SCRAPING (via Google) ============
+# ========================== LINKEDIN POST SCRAPING (via DuckDuckGo) ========
 
 
-def build_google_search_url(query: str) -> str:
+def build_ddg_search_url(query: str) -> str:
     """
-    Build a Google search URL for finding LinkedIn posts.
-    Uses tbs=qdr:d to filter results from the last 24 hours.
+    Build a DuckDuckGo HTML search URL for finding LinkedIn posts.
     """
     encoded = quote_plus(query)
-    return f"https://www.google.com/search?q={encoded}&tbs=qdr:d"
+    return f"https://html.duckduckgo.com/html/?q={encoded}"
 
 
 def fetch_linkedin_posts(query: str, attempt: int = 1) -> list[dict]:
     """
-    Search Google for LinkedIn posts matching the query.
+    Search DuckDuckGo HTML for LinkedIn posts matching the query.
     Extracts post URLs, author names, and text snippets from results.
 
     Returns a list of dicts: {author, snippet, url}
     """
-    url = build_google_search_url(query)
+    url = build_ddg_search_url(query)
     max_attempts = 2
+    ddg_headers = {
+        **HEADERS,
+        "Referer": "https://html.duckduckgo.com/",
+    }
 
     try:
-        logger.info("Fetching posts via Google: %s (attempt %d)", query, attempt)
-        response = requests.get(url, headers=HEADERS, timeout=30)
+        logger.info("Fetching posts via DuckDuckGo: %s (attempt %d)", query, attempt)
+        response = requests.get(url, headers=ddg_headers, timeout=30)
         response.raise_for_status()
     except requests.RequestException as exc:
-        logger.warning("HTTP error fetching Google results: %s", exc)
+        logger.warning("HTTP error fetching DuckDuckGo results: %s", exc)
         if attempt < max_attempts:
             backoff = 2 ** attempt + random.uniform(0, 1)
             logger.info("Retrying in %.1fs ...", backoff)
             time.sleep(backoff)
             return fetch_linkedin_posts(query, attempt + 1)
-        logger.error("Giving up on Google query after %d attempts", max_attempts)
+        logger.error("Giving up on DuckDuckGo query after %d attempts", max_attempts)
         return []
 
-    return _parse_google_results(response.text, query)
+    return _parse_ddg_results(response.text, query)
 
 
-def _parse_google_results(html: str, query: str) -> list[dict]:
+def _parse_ddg_results(html: str, query: str) -> list[dict]:
     """
-    Extract LinkedIn post links and snippets from Google search results HTML.
+    Extract LinkedIn post links and snippets from DuckDuckGo HTML search results.
     Only keeps results that link to linkedin.com/posts/.
     """
     soup = BeautifulSoup(html, "lxml")
     posts: list[dict] = []
 
-    # Google search results are typically in <div class="g"> or similar
-    for result in soup.find_all("div", class_="g"):
+    # DuckDuckGo HTML result items are inside div class="result" or "results_links"
+    results = soup.find_all("div", class_=re.compile(r"result\b"))
+
+    for res in results:
         try:
-            post = _extract_post_from_google_result(result)
-            if post and post.get("url"):
-                posts.append(post)
+            link_el = (
+                res.find("a", class_=re.compile(r"result__a"))
+                or res.find("a", href=True)
+            )
+            if not link_el:
+                continue
+
+            href = link_el["href"]
+            clean_url = _extract_clean_linkedin_url(href)
+            if not clean_url:
+                continue
+
+            title_text = link_el.get_text(strip=True)
+
+            snippet_el = (
+                res.find("a", class_=re.compile(r"result__snippet"))
+                or res.find("div", class_=re.compile(r"result__snippet"))
+                or res.find("td", class_="result-snippet")
+            )
+            snippet = snippet_el.get_text(strip=True) if snippet_el else title_text
+
+            author = _extract_author_from_url(clean_url)
+            if not author and title_text:
+                author = title_text.split(" - ")[0].split(" on ")[0].strip()
+
+            posts.append({
+                "author": author or "Unknown",
+                "snippet": snippet[:200] if snippet else "",
+                "url": clean_url,
+            })
         except Exception as exc:
-            logger.debug("Failed to parse a Google result: %s", exc)
+            logger.debug("Failed to parse a DuckDuckGo result: %s", exc)
             continue
 
-    # Fallback: search for any LinkedIn post links in the page
+    # Fallback: find any a tags linking to linkedin.com/posts/
     if not posts:
         for link in soup.find_all("a", href=True):
-            href = link["href"]
-            if "linkedin.com/posts/" in href:
-                clean_url = _extract_clean_linkedin_url(href)
-                if clean_url:
-                    text = link.get_text(strip=True)
-                    posts.append({
-                        "author": _extract_author_from_url(clean_url),
-                        "snippet": text[:200] if text else "",
-                        "url": clean_url,
-                    })
+            clean_url = _extract_clean_linkedin_url(link["href"])
+            if clean_url:
+                text = link.get_text(strip=True)
+                posts.append({
+                    "author": _extract_author_from_url(clean_url),
+                    "snippet": text[:200] if text else "",
+                    "url": clean_url,
+                })
 
     # Deduplicate by URL within this batch
     seen = set()
@@ -306,67 +336,39 @@ def _parse_google_results(html: str, query: str) -> list[dict]:
             seen.add(p["url"])
             unique_posts.append(p)
 
-    logger.info("Found %d LinkedIn posts for query: %s", len(unique_posts), query)
+    logger.info("Found %d LinkedIn posts via DuckDuckGo for query: %s", len(unique_posts), query)
     return unique_posts
-
-
-def _extract_post_from_google_result(result) -> dict | None:
-    """
-    Extract a LinkedIn post from a single Google search result element.
-    Returns a dict with author, snippet, url — or None if not a LinkedIn post.
-    """
-    link_el = result.find("a", href=True)
-    if not link_el:
-        return None
-
-    href = link_el["href"]
-    clean_url = _extract_clean_linkedin_url(href)
-    if not clean_url:
-        return None
-
-    # Extract the title/heading text
-    title_el = result.find("h3")
-    title_text = title_el.get_text(strip=True) if title_el else ""
-
-    # Extract the snippet text
-    snippet_el = (
-        result.find("div", class_=re.compile(r"VwiC3b"))
-        or result.find("span", class_=re.compile(r"aCOpRe"))
-        or result.find("div", {"data-sncf": True})
-    )
-    snippet = snippet_el.get_text(strip=True) if snippet_el else title_text
-
-    # Try to extract author name from the URL or title
-    author = _extract_author_from_url(clean_url)
-    if not author and title_text:
-        # Google titles for LinkedIn posts often start with the author name
-        author = title_text.split(" - ")[0].split(" on ")[0].strip()
-
-    return {
-        "author": author or "Unknown",
-        "snippet": snippet[:200] if snippet else "",
-        "url": clean_url,
-    }
 
 
 def _extract_clean_linkedin_url(href: str) -> str | None:
     """
-    Extract and clean a LinkedIn post URL from a Google result link.
-    Google wraps URLs in redirects — this extracts the actual LinkedIn URL.
+    Extract and clean a LinkedIn post URL from a result link.
+    Handles DuckDuckGo redirects (/l/?uddg=...) and Google redirects (/url?q=...).
     Returns None if the URL is not a LinkedIn post.
     """
-    # Google sometimes wraps URLs in /url?q=...
-    if "/url?" in href:
-        from urllib.parse import urlparse, parse_qs
+    from urllib.parse import urlparse, parse_qs, unquote
+
+    # DuckDuckGo redirect format: /l/?uddg=https%3A%2F%2Fwww.linkedin.com%2Fposts%2F...
+    if "uddg=" in href:
         parsed = urlparse(href)
         params = parse_qs(parsed.query)
-        href = params.get("q", [href])[0]
+        if "uddg" in params:
+            href = params["uddg"][0]
+
+    # Google redirect format
+    if "/url?" in href:
+        parsed = urlparse(href)
+        params = parse_qs(parsed.query)
+        if "q" in params:
+            href = params["q"][0]
+
+    href = unquote(href)
 
     # Only keep LinkedIn post URLs
     if "linkedin.com/posts/" not in href:
         return None
 
-    # Strip tracking params
+    # Strip tracking query params
     if "?" in href:
         href = href.split("?")[0]
 
@@ -379,11 +381,8 @@ def _extract_author_from_url(url: str) -> str:
     URLs follow the pattern: linkedin.com/posts/author-name_rest-of-slug
     """
     try:
-        # Extract the segment after /posts/
         slug = url.split("/posts/")[1]
-        # Author name is before the first underscore
         author_slug = slug.split("_")[0].split("-activity")[0]
-        # Convert hyphens to spaces and title-case
         return author_slug.replace("-", " ").title()
     except (IndexError, AttributeError):
         return "Unknown"
@@ -392,9 +391,6 @@ def _extract_author_from_url(url: str) -> str:
 def post_matches_tech_keywords(post: dict) -> bool:
     """
     Check if a LinkedIn post mentions at least one tech keyword.
-    Only tech keywords are checked (not role keywords) because
-    posts use informal language and the Google query already
-    constrains by location and hiring intent.
     """
     text = " ".join([
         post.get("author", ""),
@@ -696,9 +692,9 @@ def main() -> None:
             new_posts.append(post)
             seen_urls.add(post["url"])
 
-        # Random delay between Google queries to avoid rate limits
+        # Random delay between DuckDuckGo queries to avoid rate limits
         delay = random.uniform(2, 4)
-        logger.info("Waiting %.1fs before next Google query...", delay)
+        logger.info("Waiting %.1fs before next DuckDuckGo query...", delay)
         time.sleep(delay)
 
     # --- Step 4: Send notifications ---
