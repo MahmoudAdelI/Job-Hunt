@@ -430,13 +430,11 @@ def fetch_job_description(job_url: str) -> tuple[str, str]:
     return "", ""
 
 
-def matches_keywords(job: dict) -> bool:
+def matches_keywords(job: dict) -> tuple[bool, list[str], list[str]]:
     """
     Check if a job matches keyword filter criteria.
 
-    A job passes if combined text (title + company + location + description)
-    contains at least one keyword from TECH_KEYWORDS
-    AND at least one keyword from ROLE_KEYWORDS.
+    Returns tuple: (is_match, matched_tech_keywords, matched_role_keywords).
     """
     text = " ".join([
         job.get("title", ""),
@@ -445,10 +443,17 @@ def matches_keywords(job: dict) -> bool:
         job.get("description", ""),
     ]).lower()
 
-    has_tech = any(_keyword_pattern(kw).search(text) for kw in TECH_KEYWORDS)
-    has_role = any(_keyword_pattern(kw).search(text) for kw in ROLE_KEYWORDS)
+    matched_tech = [
+        kw for kw in TECH_KEYWORDS
+        if _keyword_pattern(kw).search(text)
+    ]
+    matched_roles = [
+        kw for kw in ROLE_KEYWORDS
+        if _keyword_pattern(kw).search(text)
+    ]
 
-    return has_tech and has_role
+    is_match = bool(matched_tech) and bool(matched_roles)
+    return is_match, matched_tech, matched_roles
 
 
 def matches_location(job: dict) -> bool:
@@ -562,7 +567,7 @@ def get_telegram_credentials() -> tuple[str, str]:
 def format_job_message(job: dict) -> str:
     """
     Format a job listing into a Telegram-friendly message.
-    Includes snippet from full description if available.
+    Includes matched keywords and description snippet if available.
     """
     parts = [
         "🆕 <b>New .NET Job Alert!</b>",
@@ -573,6 +578,12 @@ def format_job_message(job: dict) -> str:
 
     if job.get("location"):
         parts.append(f"📍 {_escape_html(job['location'])}")
+
+    matched_tech = job.get("matched_tech", [])
+    matched_roles = job.get("matched_roles", [])
+    if matched_tech or matched_roles:
+        matched_str = ", ".join([kw.upper() for kw in (matched_tech[:2] + matched_roles[:2])])
+        parts.append(f"🏷️ <b>Matched:</b> {_escape_html(matched_str)}")
 
     snippet = job.get("snippet", "")
     if snippet:
@@ -689,10 +700,13 @@ def main() -> None:
             job["description"] = desc
             job["snippet"] = snippet
 
-            if not matches_keywords(job):
+            is_match, matched_tech, matched_roles = matches_keywords(job)
+            if not is_match:
                 logger.debug("Job failed keyword filter: %s", job["title"])
                 continue
 
+            job["matched_tech"] = matched_tech
+            job["matched_roles"] = matched_roles
             total_passed_filter += 1
             new_jobs.append(job)
             seen_urls.add(job["url"])
