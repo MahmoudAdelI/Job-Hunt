@@ -240,21 +240,23 @@ def build_ddg_search_url(query: str) -> str:
 
 def fetch_linkedin_posts(query: str, attempt: int = 1) -> list[dict]:
     """
-    Search DuckDuckGo HTML for LinkedIn posts matching the query.
+    Search DuckDuckGo HTML for LinkedIn posts matching the query using POST form submit.
     Extracts post URLs, author names, and text snippets from results.
 
     Returns a list of dicts: {author, snippet, url}
     """
-    url = build_ddg_search_url(query)
+    url = "https://html.duckduckgo.com/html/"
     max_attempts = 2
     ddg_headers = {
         **HEADERS,
+        "Origin": "https://html.duckduckgo.com",
         "Referer": "https://html.duckduckgo.com/",
+        "Content-Type": "application/x-www-form-request",
     }
 
     try:
-        logger.info("Fetching posts via DuckDuckGo: %s (attempt %d)", query, attempt)
-        response = requests.get(url, headers=ddg_headers, timeout=30)
+        logger.info("Fetching posts via DuckDuckGo POST: %s (attempt %d)", query, attempt)
+        response = requests.post(url, data={"q": query, "b": ""}, headers=ddg_headers, timeout=30)
         response.raise_for_status()
     except requests.RequestException as exc:
         logger.warning("HTTP error fetching DuckDuckGo results: %s", exc)
