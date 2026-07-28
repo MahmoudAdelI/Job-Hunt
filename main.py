@@ -47,6 +47,15 @@ EGYPT_LOCATIONS = [
 ]
 REMOTE_KEYWORDS = ["remote", "work from home", "wfh", "anywhere", "worldwide"]
 
+# Google search queries for LinkedIn posts (job postings shared as posts)
+# These use site:linkedin.com/posts with hiring-related terms
+POST_SEARCH_QUERIES = [
+    'site:linkedin.com/posts ".NET" developer Egypt hiring',
+    'site:linkedin.com/posts "C#" developer Cairo hiring',
+    'site:linkedin.com/posts dotnet remote Egypt hiring',
+    'site:linkedin.com/posts "ASP.NET" Egypt hiring',
+]
+
 # Deduplication settings
 SEEN_JOBS_FILE = "seen_jobs.json"
 RETENTION_DAYS = 30
@@ -95,7 +104,7 @@ def build_linkedin_url(query: str) -> str:
     )
 
 
-# ========================== SCRAPING =======================================
+# ========================== JOB LISTING SCRAPING ===========================
 
 
 def fetch_jobs(url: str, attempt: int = 1) -> list[dict]:
@@ -202,6 +211,183 @@ def _extract_job_from_card(card) -> dict | None:
         "location": location,
         "url": url,
     }
+
+
+# ========================== LINKEDIN POST SCRAPING (via Google) ============
+
+
+def build_google_search_url(query: str) -> str:
+    """
+    Build a Google search URL for finding LinkedIn posts.
+    Uses tbs=qdr:d to filter results from the last 24 hours.
+    """
+    encoded = quote_plus(query)
+    return f"https://www.google.com/search?q={encoded}&tbs=qdr:d"
+
+
+def fetch_linkedin_posts(query: str, attempt: int = 1) -> list[dict]:
+    """
+    Search Google for LinkedIn posts matching the query.
+    Extracts post URLs, author names, and text snippets from results.
+
+    Returns a list of dicts: {author, snippet, url}
+    """
+    url = build_google_search_url(query)
+    max_attempts = 2
+
+    try:
+        logger.info("Fetching posts via Google: %s (attempt %d)", query, attempt)
+        response = requests.get(url, headers=HEADERS, timeout=30)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        logger.warning("HTTP error fetching Google results: %s", exc)
+        if attempt < max_attempts:
+            backoff = 2 ** attempt + random.uniform(0, 1)
+            logger.info("Retrying in %.1fs ...", backoff)
+            time.sleep(backoff)
+            return fetch_linkedin_posts(query, attempt + 1)
+        logger.error("Giving up on Google query after %d attempts", max_attempts)
+        return []
+
+    return _parse_google_results(response.text, query)
+
+
+def _parse_google_results(html: str, query: str) -> list[dict]:
+    """
+    Extract LinkedIn post links and snippets from Google search results HTML.
+    Only keeps results that link to linkedin.com/posts/.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    posts: list[dict] = []
+
+    # Google search results are typically in <div class="g"> or similar
+    for result in soup.find_all("div", class_="g"):
+        try:
+            post = _extract_post_from_google_result(result)
+            if post and post.get("url"):
+                posts.append(post)
+        except Exception as exc:
+            logger.debug("Failed to parse a Google result: %s", exc)
+            continue
+
+    # Fallback: search for any LinkedIn post links in the page
+    if not posts:
+        for link in soup.find_all("a", href=True):
+            href = link["href"]
+            if "linkedin.com/posts/" in href:
+                clean_url = _extract_clean_linkedin_url(href)
+                if clean_url:
+                    text = link.get_text(strip=True)
+                    posts.append({
+                        "author": _extract_author_from_url(clean_url),
+                        "snippet": text[:200] if text else "",
+                        "url": clean_url,
+                    })
+
+    # Deduplicate by URL within this batch
+    seen = set()
+    unique_posts = []
+    for p in posts:
+        if p["url"] not in seen:
+            seen.add(p["url"])
+            unique_posts.append(p)
+
+    logger.info("Found %d LinkedIn posts for query: %s", len(unique_posts), query)
+    return unique_posts
+
+
+def _extract_post_from_google_result(result) -> dict | None:
+    """
+    Extract a LinkedIn post from a single Google search result element.
+    Returns a dict with author, snippet, url — or None if not a LinkedIn post.
+    """
+    link_el = result.find("a", href=True)
+    if not link_el:
+        return None
+
+    href = link_el["href"]
+    clean_url = _extract_clean_linkedin_url(href)
+    if not clean_url:
+        return None
+
+    # Extract the title/heading text
+    title_el = result.find("h3")
+    title_text = title_el.get_text(strip=True) if title_el else ""
+
+    # Extract the snippet text
+    snippet_el = (
+        result.find("div", class_=re.compile(r"VwiC3b"))
+        or result.find("span", class_=re.compile(r"aCOpRe"))
+        or result.find("div", {"data-sncf": True})
+    )
+    snippet = snippet_el.get_text(strip=True) if snippet_el else title_text
+
+    # Try to extract author name from the URL or title
+    author = _extract_author_from_url(clean_url)
+    if not author and title_text:
+        # Google titles for LinkedIn posts often start with the author name
+        author = title_text.split(" - ")[0].split(" on ")[0].strip()
+
+    return {
+        "author": author or "Unknown",
+        "snippet": snippet[:200] if snippet else "",
+        "url": clean_url,
+    }
+
+
+def _extract_clean_linkedin_url(href: str) -> str | None:
+    """
+    Extract and clean a LinkedIn post URL from a Google result link.
+    Google wraps URLs in redirects — this extracts the actual LinkedIn URL.
+    Returns None if the URL is not a LinkedIn post.
+    """
+    # Google sometimes wraps URLs in /url?q=...
+    if "/url?" in href:
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(href)
+        params = parse_qs(parsed.query)
+        href = params.get("q", [href])[0]
+
+    # Only keep LinkedIn post URLs
+    if "linkedin.com/posts/" not in href:
+        return None
+
+    # Strip tracking params
+    if "?" in href:
+        href = href.split("?")[0]
+
+    return href
+
+
+def _extract_author_from_url(url: str) -> str:
+    """
+    Extract the author name from a LinkedIn post URL.
+    URLs follow the pattern: linkedin.com/posts/author-name_rest-of-slug
+    """
+    try:
+        # Extract the segment after /posts/
+        slug = url.split("/posts/")[1]
+        # Author name is before the first underscore
+        author_slug = slug.split("_")[0].split("-activity")[0]
+        # Convert hyphens to spaces and title-case
+        return author_slug.replace("-", " ").title()
+    except (IndexError, AttributeError):
+        return "Unknown"
+
+
+def post_matches_tech_keywords(post: dict) -> bool:
+    """
+    Check if a LinkedIn post mentions at least one tech keyword.
+    Only tech keywords are checked (not role keywords) because
+    posts use informal language and the Google query already
+    constrains by location and hiring intent.
+    """
+    text = " ".join([
+        post.get("author", ""),
+        post.get("snippet", ""),
+    ]).lower()
+
+    return any(_keyword_pattern(kw).search(text) for kw in TECH_KEYWORDS)
 
 
 # ========================== KEYWORD FILTERING ==============================
@@ -359,6 +545,30 @@ def format_job_message(job: dict) -> str:
     return "\n".join(parts)
 
 
+def format_post_message(post: dict) -> str:
+    """
+    Format a LinkedIn post into a Telegram-friendly message.
+    Uses a distinct style to differentiate from formal job listings.
+    """
+    snippet = post.get("snippet", "")
+    # Truncate long snippets to keep messages readable
+    if len(snippet) > 150:
+        snippet = snippet[:147] + "..."
+
+    parts = [
+        "📢 <b>New .NET Job Post Found!</b>",
+        "",
+        f"👤 <b>{_escape_html(post['author'])}</b>",
+    ]
+
+    if snippet:
+        parts.append(f"📝 {_escape_html(snippet)}")
+
+    parts.append(f"🔗 <a href=\"{post['url']}\">View Post</a>")
+
+    return "\n".join(parts)
+
+
 def _escape_html(text: str) -> str:
     """Escape HTML special characters for Telegram HTML parse mode."""
     return (
@@ -417,7 +627,7 @@ def main() -> None:
     seen_jobs = prune_old_entries(seen_jobs)
     seen_urls = {entry["url"] for entry in seen_jobs}
 
-    # --- Step 3: Fetch, filter, deduplicate ---
+    # --- Step 3: Fetch, filter, deduplicate JOB LISTINGS ---
     total_fetched = 0
     total_passed_filter = 0
     new_jobs: list[dict] = []
@@ -445,39 +655,82 @@ def main() -> None:
         logger.info("Waiting %.1fs before next query...", delay)
         time.sleep(delay)
 
+    # --- Step 3b: Fetch, filter, deduplicate LINKEDIN POSTS ---
+    total_posts_fetched = 0
+    total_posts_passed = 0
+    new_posts: list[dict] = []
+
+    for query in POST_SEARCH_QUERIES:
+        posts = fetch_linkedin_posts(query)
+        total_posts_fetched += len(posts)
+
+        for post in posts:
+            if not post_matches_tech_keywords(post):
+                continue
+            total_posts_passed += 1
+
+            if post["url"] in seen_urls:
+                continue
+
+            new_posts.append(post)
+            seen_urls.add(post["url"])
+
+        # Random delay between Google queries to avoid rate limits
+        delay = random.uniform(2, 4)
+        logger.info("Waiting %.1fs before next Google query...", delay)
+        time.sleep(delay)
+
     # --- Step 4: Send notifications ---
     sent_count = 0
+
+    # Send job listing alerts
     for i, job in enumerate(new_jobs):
         message = format_job_message(job)
         if send_telegram_message(message, token, chat_id):
             sent_count += 1
         else:
             logger.warning("Failed to send alert for: %s", job["title"])
-
         # 1-second delay between messages to respect Telegram rate limits
-        if i < len(new_jobs) - 1:
+        if i < len(new_jobs) - 1 or new_posts:
+            time.sleep(1)
+
+    # Send post alerts
+    for i, post in enumerate(new_posts):
+        message = format_post_message(post)
+        if send_telegram_message(message, token, chat_id):
+            sent_count += 1
+        else:
+            logger.warning("Failed to send alert for post by: %s", post["author"])
+        if i < len(new_posts) - 1:
             time.sleep(1)
 
     # --- Step 5: Persist seen jobs ---
     now = datetime.now(timezone.utc).isoformat()
     for job in new_jobs:
         seen_jobs.append({"url": job["url"], "seen_at": now})
+    for post in new_posts:
+        seen_jobs.append({"url": post["url"], "seen_at": now})
     save_seen_jobs(seen_jobs)
 
     # --- Step 6: Summary ---
+    total_new = len(new_jobs) + len(new_posts)
     logger.info("=" * 50)
     logger.info("RUN SUMMARY")
     logger.info("=" * 50)
-    logger.info("Queries executed:     %d", len(SEARCH_QUERIES))
-    logger.info("Total jobs fetched:   %d", total_fetched)
-    logger.info("Passed keyword filter: %d", total_passed_filter)
-    logger.info("New (unseen) jobs:    %d", len(new_jobs))
-    logger.info("Telegram alerts sent: %d", sent_count)
-    logger.info("Seen jobs in file:    %d", len(seen_jobs))
+    logger.info("Job queries executed:  %d", len(SEARCH_QUERIES))
+    logger.info("Jobs fetched:          %d", total_fetched)
+    logger.info("Jobs passed filter:    %d", total_passed_filter)
+    logger.info("New job listings:      %d", len(new_jobs))
+    logger.info("Post queries executed: %d", len(POST_SEARCH_QUERIES))
+    logger.info("Posts fetched:         %d", total_posts_fetched)
+    logger.info("Posts passed filter:   %d", total_posts_passed)
+    logger.info("New posts:             %d", len(new_posts))
+    logger.info("Telegram alerts sent:  %d", sent_count)
+    logger.info("Seen entries in file:  %d", len(seen_jobs))
     logger.info("=" * 50)
 
-    if not new_jobs:
-        logger.info("No new matching jobs found this run. Nothing to do.")
+    if total_new == 0:
+        logger.info("No new matching jobs or posts found this run. Nothing to do.")
 
 
 if __name__ == "__main__":
