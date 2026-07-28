@@ -37,10 +37,11 @@ SEARCH_QUERIES = [
 ]
 
 # Expanded Tech Keywords
+# Strict .NET Tech Keywords (only explicit .NET / C# technologies)
 TECH_KEYWORDS = [
     "c#", ".net", "asp.net", "dotnet", "dot net",
     ".net core", "ef core", "entity framework",
-    "blazor", "web api", "microservices", "aspnet",
+    "blazor", "aspnet",
 ]
 
 # Expanded Role Keywords
