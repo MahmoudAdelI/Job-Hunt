@@ -306,8 +306,14 @@ def fetch_bayt_jobs(query: str) -> list[dict]:
     """
     url = f"https://www.bayt.com/en/egypt/jobs/{query}-jobs/"
     logger.info("Fetching Bayt jobs: %s", url)
+    session = requests.Session()
+    bayt_headers = {
+        **HEADERS,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Referer": "https://www.bayt.com/en/egypt/jobs/",
+    }
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=20)
+        resp = session.get(url, headers=bayt_headers, timeout=20)
         if resp.status_code != 200:
             logger.warning("Bayt HTTP status %d for query %s", resp.status_code, query)
             return []
