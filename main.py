@@ -711,7 +711,6 @@ def format_job_message(job: dict) -> str:
     """
     source = job.get("source", "LinkedIn")
     parts = [
-        "🆕 <b>New .NET Job Alert!</b>",
         f"🌐 <b>Source:</b> {_escape_html(source)}",
         "",
         f"💼 <b>{_escape_html(job['title'])}</b>",
@@ -741,7 +740,6 @@ def format_job_message(job: dict) -> str:
 def format_post_message(post: dict) -> str:
     """
     Format a LinkedIn post into a Telegram-friendly message.
-    Uses a distinct style to differentiate from formal job listings.
     """
     snippet = post.get("snippet", "")
     # Truncate long snippets to keep messages readable
@@ -749,8 +747,6 @@ def format_post_message(post: dict) -> str:
         snippet = snippet[:147] + "..."
 
     parts = [
-        "📢 <b>New .NET Job Post Found!</b>",
-        "",
         f"👤 <b>{_escape_html(post['author'])}</b>",
     ]
 
