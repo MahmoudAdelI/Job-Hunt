@@ -225,7 +225,137 @@ def _extract_job_from_card(card) -> dict | None:
         "company": company,
         "location": location,
         "url": url,
+        "source": "LinkedIn",
     }
+
+
+# ========================== WUZZUF & BAYT SCRAPING =========================
+
+
+WUZZUF_QUERIES = [".NET", "C#", "ASP.NET"]
+BAYT_QUERIES = ["net", "c-sharp", "asp-net"]
+
+
+def fetch_wuzzuf_jobs(keyword: str) -> list[dict]:
+    """
+    Scrape Wuzzuf.net Egypt for jobs matching keyword.
+    """
+    url = f"https://wuzzuf.net/search/jobs/?q={quote_plus(keyword)}&a=hpb"
+    logger.info("Fetching Wuzzuf jobs: %s", url)
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=20)
+        if resp.status_code != 200:
+            logger.warning("Wuzzuf HTTP status %d for query %s", resp.status_code, keyword)
+            return []
+    except Exception as exc:
+        logger.warning("Failed to fetch Wuzzuf query %s: %s", keyword, exc)
+        return []
+
+    soup = BeautifulSoup(resp.text, "lxml")
+    jobs: list[dict] = []
+
+    # Find job title links / containers
+    title_links = soup.find_all("a", href=re.compile(r"/jobs/p/"))
+    for link in title_links:
+        title = link.get_text(strip=True)
+        if not title:
+            continue
+
+        href = link["href"].strip()
+        full_url = href if href.startswith("http") else f"https://wuzzuf.net{href}"
+        if "?" in full_url:
+            full_url = full_url.split("?")[0]
+
+        card = link.find_parent(["div", "li", "td"]) or link.parent
+        comp_el = (
+            card.find("a", class_=re.compile(r"(css-17s97q8|company)"))
+            if card else None
+        )
+        company = comp_el.get_text(strip=True) if comp_el else "Wuzzuf Employer"
+        company = re.sub(r"\s*[-|]\s*$", "", company)
+
+        loc_el = (
+            card.find("span", class_=re.compile(r"(location|css-5x9x18|css-1552x71)"))
+            if card else None
+        )
+        location = loc_el.get_text(strip=True) if loc_el else "Egypt"
+
+        jobs.append({
+            "title": title,
+            "company": company,
+            "location": location,
+            "url": full_url,
+            "source": "Wuzzuf",
+        })
+
+    # Deduplicate within batch
+    seen = set()
+    unique = []
+    for j in jobs:
+        if j["url"] not in seen:
+            seen.add(j["url"])
+            unique.append(j)
+
+    logger.info("Parsed %d jobs from Wuzzuf for query: %s", len(unique), keyword)
+    return unique
+
+
+def fetch_bayt_jobs(query: str) -> list[dict]:
+    """
+    Scrape Bayt.com Egypt for jobs matching query.
+    """
+    url = f"https://www.bayt.com/en/egypt/jobs/{query}-jobs/"
+    logger.info("Fetching Bayt jobs: %s", url)
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=20)
+        if resp.status_code != 200:
+            logger.warning("Bayt HTTP status %d for query %s", resp.status_code, query)
+            return []
+    except Exception as exc:
+        logger.warning("Failed to fetch Bayt query %s: %s", query, exc)
+        return []
+
+    soup = BeautifulSoup(resp.text, "lxml")
+    jobs: list[dict] = []
+
+    # Find job titles in Bayt HTML
+    title_els = soup.find_all("h2", class_=re.compile(r"jb-title"))
+    for h2 in title_els:
+        link = h2.find("a", href=True)
+        if not link:
+            continue
+
+        title = link.get_text(strip=True)
+        href = link["href"].strip()
+        full_url = href if href.startswith("http") else f"https://www.bayt.com{href}"
+        if "?" in full_url:
+            full_url = full_url.split("?")[0]
+
+        card = h2.find_parent(["li", "div", "article"]) or h2.parent
+        comp_el = card.find("b", class_=re.compile(r"jb-company")) if card else None
+        company = comp_el.get_text(strip=True) if comp_el else "Bayt Employer"
+
+        loc_el = card.find("span", class_=re.compile(r"jb-loc")) if card else None
+        location = loc_el.get_text(strip=True) if loc_el else "Egypt"
+
+        jobs.append({
+            "title": title,
+            "company": company,
+            "location": location,
+            "url": full_url,
+            "source": "Bayt",
+        })
+
+    # Deduplicate within batch
+    seen = set()
+    unique = []
+    for j in jobs:
+        if j["url"] not in seen:
+            seen.add(j["url"])
+            unique.append(j)
+
+    logger.info("Parsed %d jobs from Bayt for query: %s", len(unique), query)
+    return unique
 
 
 # ========================== LINKEDIN POST SCRAPING (via DuckDuckGo) ========
@@ -471,17 +601,20 @@ def matches_location(job: dict) -> bool:
 def matches_location(job: dict) -> bool:
     """
     EGYPT ONLY ALLOWLIST:
-
-    Only accepts a job if it is explicitly located in an Egyptian city/region
-    (EGYPT_LOCATIONS) or hosted on eg.linkedin.com domain.
+    Only accepts jobs explicitly located in an Egyptian city/region (EGYPT_LOCATIONS),
+    or hosted on eg.linkedin.com, wuzzuf.net, or bayt.com domain.
     """
+    source = job.get("source", "")
+    if source in ("Wuzzuf", "Bayt"):
+        return True
+
     title = job.get("title", "").lower()
     location = job.get("location", "").lower()
     url = job.get("url", "").lower()
     full_text = f"{title} {location}"
 
     is_egypt_city = any(loc in full_text for loc in EGYPT_LOCATIONS)
-    is_egypt_domain = "eg.linkedin.com" in url
+    is_egypt_domain = any(dom in url for dom in ["eg.linkedin.com", "wuzzuf.net", "bayt.com"])
 
     return is_egypt_city or is_egypt_domain
 
@@ -568,10 +701,12 @@ def get_telegram_credentials() -> tuple[str, str]:
 def format_job_message(job: dict) -> str:
     """
     Format a job listing into a Telegram-friendly message.
-    Includes matched keywords and description snippet if available.
+    Includes platform source badge, matched keywords, and description snippet if available.
     """
+    source = job.get("source", "LinkedIn")
     parts = [
         "🆕 <b>New .NET Job Alert!</b>",
+        f"🌐 <b>Source:</b> {_escape_html(source)}",
         "",
         f"💼 <b>{_escape_html(job['title'])}</b>",
         f"🏢 {_escape_html(job['company'])}",
@@ -727,6 +862,52 @@ def main() -> None:
         delay = random.uniform(1, 3)
         logger.info("Waiting %.1fs before next query...", delay)
         time.sleep(delay)
+
+    # --- Step 3b: Fetch, filter, deduplicate WUZZUF JOBS ---
+    for wquery in WUZZUF_QUERIES:
+        wjobs = fetch_wuzzuf_jobs(wquery)
+        total_fetched += len(wjobs)
+
+        for job in wjobs:
+            if not matches_location(job):
+                continue
+            if job["url"] in seen_urls:
+                continue
+
+            is_match, matched_tech, matched_roles = matches_keywords(job)
+            if not is_match:
+                continue
+
+            job["matched_tech"] = matched_tech
+            job["matched_roles"] = matched_roles
+            total_passed_filter += 1
+            new_jobs.append(job)
+            seen_urls.add(job["url"])
+
+        time.sleep(random.uniform(1, 2))
+
+    # --- Step 3c: Fetch, filter, deduplicate BAYT JOBS ---
+    for bquery in BAYT_QUERIES:
+        bjobs = fetch_bayt_jobs(bquery)
+        total_fetched += len(bjobs)
+
+        for job in bjobs:
+            if not matches_location(job):
+                continue
+            if job["url"] in seen_urls:
+                continue
+
+            is_match, matched_tech, matched_roles = matches_keywords(job)
+            if not is_match:
+                continue
+
+            job["matched_tech"] = matched_tech
+            job["matched_roles"] = matched_roles
+            total_passed_filter += 1
+            new_jobs.append(job)
+            seen_urls.add(job["url"])
+
+        time.sleep(random.uniform(1, 2))
 
     # --- Step 3b: Fetch, filter, deduplicate LINKEDIN POSTS ---
     total_posts_fetched = 0
