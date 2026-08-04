@@ -21,6 +21,13 @@ from urllib.parse import quote_plus
 import requests
 from bs4 import BeautifulSoup
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+
 # ---------------------------------------------------------------------------
 # Configuration — edit these to customise your alerts
 # ---------------------------------------------------------------------------
@@ -628,12 +635,39 @@ def matches_location(job: dict) -> bool:
 # ========================== DEDUPLICATION ==================================
 
 
+def _get_redis_client():
+    """Returns a Redis client if REDIS_URL is set, else None."""
+    redis_url = os.environ.get("REDIS_URL", "").strip()
+    if not redis_url:
+        return None
+    try:
+        import redis
+        client = redis.Redis.from_url(redis_url, decode_responses=True, socket_timeout=5)
+        client.ping()
+        return client
+    except Exception as exc:
+        logger.warning("Could not connect to Redis (%s). Falling back to local file.", exc)
+        return None
+
+
 def load_seen_jobs() -> list[dict]:
     """
-    Load the seen-jobs list from disk.
+    Load the seen-jobs list from Upstash Redis (if configured) or local disk.
     Returns a list of {"url": str, "seen_at": str} dicts.
-    Returns [] if the file is missing or corrupt.
+    Returns [] if missing or corrupt.
     """
+    r = _get_redis_client()
+    if r:
+        try:
+            val = r.get("job_alert:seen_jobs")
+            if val:
+                data = json.loads(val)
+                logger.info("Loaded %d seen jobs from Upstash Redis", len(data))
+                return data
+            return []
+        except Exception as exc:
+            logger.warning("Error reading seen_jobs from Redis: %s", exc)
+
     if not os.path.exists(SEEN_JOBS_FILE):
         return []
 
@@ -652,10 +686,20 @@ def load_seen_jobs() -> list[dict]:
 
 
 def save_seen_jobs(seen: list[dict]) -> None:
-    """Save the seen-jobs list to disk with readable formatting."""
+    """Save the seen-jobs list to Upstash Redis (if configured) or local disk."""
+    r = _get_redis_client()
+    if r:
+        try:
+            r.set("job_alert:seen_jobs", json.dumps(seen, ensure_ascii=False))
+            logger.info("Saved %d entries to Upstash Redis", len(seen))
+            return
+        except Exception as exc:
+            logger.warning("Error saving seen_jobs to Redis: %s — saving to local file instead", exc)
+
     with open(SEEN_JOBS_FILE, "w", encoding="utf-8") as f:
         json.dump(seen, f, indent=2, ensure_ascii=False)
     logger.info("Saved %d entries to %s", len(seen), SEEN_JOBS_FILE)
+
 
 
 def prune_old_entries(seen: list[dict]) -> list[dict]:
@@ -808,26 +852,26 @@ def send_telegram_message(text: str, token: str, chat_id: str) -> bool:
 # ========================== MAIN ORCHESTRATION =============================
 
 
-def main() -> None:
+def run_job_alert_pipeline() -> dict:
     """
-    Main entry point — orchestrates the full pipeline:
+    Orchestrates the full job alert pipeline and returns execution summary dict:
     1. Validate Telegram credentials
     2. Load seen jobs & prune old entries
     3. For each query: fetch → filter → deduplicate
     4. Send Telegram notifications for new matches
     5. Save updated seen-jobs list
-    6. Print summary
+    6. Return summary stats dict
     """
-    # --- Step 1: Validate credentials early ---
+    start_time = datetime.now(timezone.utc)
     token, chat_id = get_telegram_credentials()
     logger.info("Telegram credentials loaded successfully")
 
-    # --- Step 2: Load & prune seen jobs ---
+    # Load & prune seen jobs
     seen_jobs = load_seen_jobs()
     seen_jobs = prune_old_entries(seen_jobs)
     seen_urls = {entry["url"] for entry in seen_jobs}
 
-    # --- Step 3: Fetch, filter, deduplicate JOB LISTINGS ---
+    # Fetch, filter, deduplicate JOB LISTINGS
     total_fetched = 0
     total_passed_filter = 0
     new_jobs: list[dict] = []
@@ -844,7 +888,6 @@ def main() -> None:
             if job["url"] in seen_urls:
                 continue
 
-            # Fetch full description for unseen location-matching jobs
             desc, snippet = fetch_job_description(job["url"])
             job["description"] = desc
             job["snippet"] = snippet
@@ -860,12 +903,11 @@ def main() -> None:
             new_jobs.append(job)
             seen_urls.add(job["url"])
 
-        # Random delay between queries to be polite
         delay = random.uniform(1, 3)
         logger.info("Waiting %.1fs before next query...", delay)
         time.sleep(delay)
 
-    # --- Step 3b: Fetch, filter, deduplicate WUZZUF JOBS ---
+    # Fetch, filter, deduplicate WUZZUF JOBS
     for wquery in WUZZUF_QUERIES:
         wjobs = fetch_wuzzuf_jobs(wquery)
         total_fetched += len(wjobs)
@@ -888,7 +930,7 @@ def main() -> None:
 
         time.sleep(random.uniform(1, 2))
 
-    # --- Step 3c: Fetch, filter, deduplicate BAYT JOBS ---
+    # Fetch, filter, deduplicate BAYT JOBS
     for bquery in BAYT_QUERIES:
         bjobs = fetch_bayt_jobs(bquery)
         total_fetched += len(bjobs)
@@ -911,7 +953,7 @@ def main() -> None:
 
         time.sleep(random.uniform(1, 2))
 
-    # --- Step 3b: Fetch, filter, deduplicate LINKEDIN POSTS ---
+    # Fetch, filter, deduplicate LINKEDIN POSTS
     total_posts_fetched = 0
     total_posts_passed = 0
     new_posts: list[dict] = []
@@ -931,26 +973,22 @@ def main() -> None:
             new_posts.append(post)
             seen_urls.add(post["url"])
 
-        # Random delay between DuckDuckGo queries to avoid rate limits
         delay = random.uniform(2, 4)
         logger.info("Waiting %.1fs before next DuckDuckGo query...", delay)
         time.sleep(delay)
 
-    # --- Step 4: Send notifications ---
+    # Send notifications
     sent_count = 0
 
-    # Send job listing alerts
     for i, job in enumerate(new_jobs):
         message = format_job_message(job)
         if send_telegram_message(message, token, chat_id):
             sent_count += 1
         else:
             logger.warning("Failed to send alert for: %s", job["title"])
-        # 1-second delay between messages to respect Telegram rate limits
         if i < len(new_jobs) - 1 or new_posts:
             time.sleep(1)
 
-    # Send post alerts
     for i, post in enumerate(new_posts):
         message = format_post_message(post)
         if send_telegram_message(message, token, chat_id):
@@ -960,7 +998,7 @@ def main() -> None:
         if i < len(new_posts) - 1:
             time.sleep(1)
 
-    # --- Step 5: Persist seen jobs ---
+    # Persist seen jobs
     now = datetime.now(timezone.utc).isoformat()
     for job in new_jobs:
         seen_jobs.append({"url": job["url"], "seen_at": now})
@@ -968,26 +1006,42 @@ def main() -> None:
         seen_jobs.append({"url": post["url"], "seen_at": now})
     save_seen_jobs(seen_jobs)
 
-    # --- Step 6: Summary ---
+    # Summary
+    end_time = datetime.now(timezone.utc)
+    duration_secs = (end_time - start_time).total_seconds()
     total_new = len(new_jobs) + len(new_posts)
+
+    summary = {
+        "status": "success",
+        "last_run_at": end_time.isoformat(),
+        "duration_seconds": round(duration_secs, 1),
+        "total_jobs_fetched": total_fetched,
+        "new_jobs_found": len(new_jobs),
+        "total_posts_fetched": total_posts_fetched,
+        "new_posts_found": len(new_posts),
+        "telegram_alerts_sent": sent_count,
+        "total_seen_entries": len(seen_jobs),
+    }
+
     logger.info("=" * 50)
     logger.info("RUN SUMMARY")
     logger.info("=" * 50)
-    logger.info("Job queries executed:  %d", len(SEARCH_QUERIES))
+    logger.info("Duration:               %.1fs", duration_secs)
     logger.info("Jobs fetched:          %d", total_fetched)
-    logger.info("Jobs passed filter:    %d", total_passed_filter)
     logger.info("New job listings:      %d", len(new_jobs))
-    logger.info("Post queries executed: %d", len(POST_SEARCH_QUERIES))
     logger.info("Posts fetched:         %d", total_posts_fetched)
-    logger.info("Posts passed filter:   %d", total_posts_passed)
     logger.info("New posts:             %d", len(new_posts))
     logger.info("Telegram alerts sent:  %d", sent_count)
-    logger.info("Seen entries in file:  %d", len(seen_jobs))
+    logger.info("Seen entries:          %d", len(seen_jobs))
     logger.info("=" * 50)
 
-    if total_new == 0:
-        logger.info("No new matching jobs or posts found this run. Nothing to do.")
+    return summary
+
+
+def main() -> None:
+    run_job_alert_pipeline()
 
 
 if __name__ == "__main__":
     main()
+
