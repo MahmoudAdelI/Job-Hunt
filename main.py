@@ -31,15 +31,11 @@ except ImportError:
 # Configuration — edit these to customise your alerts
 # ---------------------------------------------------------------------------
 
-# LinkedIn search queries for Egypt
+# LinkedIn search queries for Egypt (kept lean for serverless time limits)
 SEARCH_QUERIES = [
     {"keywords": ".NET", "location": "Egypt"},
     {"keywords": "C#", "location": "Egypt"},
     {"keywords": "ASP.NET", "location": "Egypt"},
-    {"keywords": "Software Engineer .NET", "location": "Egypt"},
-    {"keywords": "Full Stack .NET", "location": "Egypt"},
-    {"keywords": "Backend .NET", "location": "Egypt"},
-    {"keywords": "C# developer", "location": "Cairo, Egypt"},
 ]
 
 # Expanded Tech Keywords
@@ -136,19 +132,12 @@ def fetch_jobs(url: str, attempt: int = 1) -> list[dict]:
 
     Returns a list of dicts: {title, company, location, url}
     """
-    max_attempts = 2
     try:
-        logger.info("Fetching: %s (attempt %d)", url, attempt)
-        response = requests.get(url, headers=HEADERS, timeout=30)
+        logger.info("Fetching: %s", url)
+        response = requests.get(url, headers=HEADERS, timeout=8)
         response.raise_for_status()
     except requests.RequestException as exc:
         logger.warning("HTTP error fetching %s: %s", url, exc)
-        if attempt < max_attempts:
-            backoff = 2 ** attempt + random.uniform(0, 1)
-            logger.info("Retrying in %.1fs ...", backoff)
-            time.sleep(backoff)
-            return fetch_jobs(url, attempt + 1)
-        logger.error("Giving up on %s after %d attempts", url, max_attempts)
         return []
 
     return _parse_job_listings(response.text, url)
@@ -248,7 +237,7 @@ def fetch_wuzzuf_jobs(keyword: str) -> list[dict]:
     url = f"https://wuzzuf.net/search/jobs/?q={quote_plus(keyword)}&a=hpb"
     logger.info("Fetching Wuzzuf jobs: %s", url)
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=20)
+        resp = requests.get(url, headers=HEADERS, timeout=8)
         if resp.status_code != 200:
             logger.warning("Wuzzuf HTTP status %d for query %s", resp.status_code, keyword)
             return []
@@ -318,7 +307,7 @@ def fetch_bayt_jobs(query: str) -> list[dict]:
         "Referer": "https://www.bayt.com/en/egypt/jobs/",
     }
     try:
-        resp = session.get(url, headers=bayt_headers, timeout=20)
+        resp = session.get(url, headers=bayt_headers, timeout=8)
         if resp.status_code != 200:
             logger.warning("Bayt HTTP status %d for query %s", resp.status_code, query)
             return []
@@ -380,7 +369,7 @@ def build_ddg_search_url(query: str) -> str:
     return f"https://html.duckduckgo.com/html/?q={encoded}"
 
 
-def fetch_linkedin_posts(query: str, attempt: int = 1) -> list[dict]:
+def fetch_linkedin_posts(query: str) -> list[dict]:
     """
     Search DuckDuckGo HTML for LinkedIn posts matching the query using POST form submit.
     Extracts post URLs, author names, and text snippets from results.
@@ -388,7 +377,6 @@ def fetch_linkedin_posts(query: str, attempt: int = 1) -> list[dict]:
     Returns a list of dicts: {author, snippet, url}
     """
     url = "https://html.duckduckgo.com/html/"
-    max_attempts = 2
     ddg_headers = {
         **HEADERS,
         "Origin": "https://html.duckduckgo.com",
@@ -397,17 +385,11 @@ def fetch_linkedin_posts(query: str, attempt: int = 1) -> list[dict]:
     }
 
     try:
-        logger.info("Fetching posts via DuckDuckGo POST: %s (attempt %d)", query, attempt)
-        response = requests.post(url, data={"q": query, "b": ""}, headers=ddg_headers, timeout=30)
+        logger.info("Fetching posts via DuckDuckGo POST: %s", query)
+        response = requests.post(url, data={"q": query, "b": ""}, headers=ddg_headers, timeout=8)
         response.raise_for_status()
     except requests.RequestException as exc:
         logger.warning("HTTP error fetching DuckDuckGo results: %s", exc)
-        if attempt < max_attempts:
-            backoff = 2 ** attempt + random.uniform(0, 1)
-            logger.info("Retrying in %.1fs ...", backoff)
-            time.sleep(backoff)
-            return fetch_linkedin_posts(query, attempt + 1)
-        logger.error("Giving up on DuckDuckGo query after %d attempts", max_attempts)
         return []
 
     return _parse_ddg_results(response.text, query)
@@ -863,10 +845,6 @@ def run_job_alert_pipeline() -> dict:
 
             if job["url"] in seen_urls:
                 continue
-
-            desc, snippet = fetch_job_description(job["url"])
-            job["description"] = desc
-            job["snippet"] = snippet
 
             is_match, matched_tech, matched_roles = matches_keywords(job)
             if not is_match:
