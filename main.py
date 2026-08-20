@@ -314,17 +314,40 @@ def matches_location(job: dict) -> bool:
 
 
 def _get_redis_client():
-    """Returns a Redis client. Raises RuntimeError if REDIS_URL is not set or connection fails."""
+    """Returns a Redis client. Auto-handles TLS (rediss://) and protocol compatibility for Upstash."""
     redis_url = os.environ.get("REDIS_URL", "").strip()
     if not redis_url:
         raise RuntimeError(
             "REDIS_URL environment variable is required. "
             "Set it to your Upstash Redis connection string."
         )
+
+    # Upstash requires TLS/SSL (rediss://)
+    if redis_url.startswith("redis://") and "upstash.io" in redis_url:
+        redis_url = "rediss://" + redis_url[len("redis://"):]
+
     import redis
-    client = redis.Redis.from_url(redis_url, decode_responses=True, socket_timeout=5)
-    client.ping()
-    return client
+    try:
+        client = redis.Redis.from_url(
+            redis_url,
+            decode_responses=True,
+            socket_timeout=10,
+            socket_connect_timeout=10,
+            protocol=2,
+        )
+        client.ping()
+        return client
+    except Exception as exc:
+        logger.warning("Primary Redis connect failed (%s), trying with SSL options...", exc)
+        client = redis.Redis.from_url(
+            redis_url,
+            decode_responses=True,
+            socket_timeout=10,
+            socket_connect_timeout=10,
+            ssl_cert_reqs=None,
+        )
+        client.ping()
+        return client
 
 
 def load_seen_jobs() -> list[dict]:
