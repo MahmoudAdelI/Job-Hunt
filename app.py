@@ -41,6 +41,7 @@ RUN_INTERVAL_MINUTES = int(os.environ.get("RUN_INTERVAL_MINUTES", "5"))
 app = FastAPI(
     title=".NET Job Alert Scraper Service",
     description="Automated job scraper with Telegram alerts, deployed on Vercel.",
+    redirect_slashes=False,
 )
 
 
@@ -49,15 +50,19 @@ app = FastAPI(
 # ---------------------------------------------------------------------------
 def _verify_api_secret(request: Request) -> None:
     """
-    Verify the API secret from the X-API-Secret header.
-    Used to protect the /api/cron endpoint so only cron-job.org can call it.
+    Verify the API secret from headers (X-API-Secret / Authorization) or query params (secret / key).
     """
     expected = os.environ.get("API_SECRET", "").strip()
     if not expected:
         logger.warning("API_SECRET not configured — cron endpoint is unprotected!")
         return
 
-    provided = request.headers.get("x-api-secret", "").strip()
+    provided = (
+        request.headers.get("x-api-secret", "").strip()
+        or request.query_params.get("secret", "").strip()
+        or request.query_params.get("key", "").strip()
+        or request.headers.get("authorization", "").replace("Bearer ", "").replace("bearer ", "").strip()
+    )
     if provided != expected:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -66,6 +71,7 @@ def _verify_api_secret(request: Request) -> None:
 # Endpoints
 # ---------------------------------------------------------------------------
 @app.get("/health")
+@app.get("/api/health")
 async def health_check():
     """Liveness probe endpoint. Reads latest stats from Redis."""
     try:
@@ -83,11 +89,14 @@ async def health_check():
 
 
 @app.get("/api/cron")
+@app.post("/api/cron")
+@app.get("/cron")
+@app.post("/cron")
 async def cron_trigger(request: Request):
     """
-    Cron endpoint called by cron-job.org on a schedule.
+    Cron endpoint called by cron-job.org or manual trigger.
     Runs the full scraper pipeline synchronously.
-    Protected by API_SECRET header.
+    Protected by API_SECRET header or ?secret= query param.
     """
     _verify_api_secret(request)
 
@@ -106,6 +115,8 @@ async def cron_trigger(request: Request):
 
 @app.post("/trigger")
 @app.get("/trigger")
+@app.post("/api/trigger")
+@app.get("/api/trigger")
 async def manual_trigger():
     """Manually trigger the scraper pipeline."""
     try:
