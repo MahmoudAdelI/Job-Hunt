@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+venv/
+.venv/
+.env
+*.egg-info/
+dist/
+build/
+seen_jobs.json
+.vercel/

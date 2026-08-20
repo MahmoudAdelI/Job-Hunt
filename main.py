@@ -12,7 +12,6 @@ import json
 import logging
 import os
 import re
-import sys
 import time
 import random
 from datetime import datetime, timedelta, timezone
@@ -74,7 +73,6 @@ POST_SEARCH_QUERIES = [
 ]
 
 # Deduplication settings
-SEEN_JOBS_FILE = "seen_jobs.json"
 RETENTION_DAYS = 30
 
 # ---------------------------------------------------------------------------
@@ -600,17 +598,7 @@ def matches_keywords(job: dict) -> tuple[bool, list[str], list[str]]:
     return is_match, matched_tech, matched_roles
 
 
-def matches_location(job: dict) -> bool:
-    """
-    Check if a job is located in Egypt or is a remote position.
 
-    1. Accepts jobs explicitly in Egyptian locations.
-    2. Rejects jobs hosted on non-Egypt country domain subdomains (sa.linkedin.com, ae.linkedin.com, etc.).
-    3. Rejects jobs in foreign countries, cities, or states (Saudi, UAE, USA, UK, India, etc.).
-    4. Accepts remote/worldwide jobs that do not belong to an excluded foreign location.
-    """
-    title = job.get("title", "").lower()
-    location = job.get("location", "").lower()
 def matches_location(job: dict) -> bool:
     """
     EGYPT ONLY ALLOWLIST:
@@ -636,69 +624,58 @@ def matches_location(job: dict) -> bool:
 
 
 def _get_redis_client():
-    """Returns a Redis client if REDIS_URL is set, else None."""
+    """Returns a Redis client. Raises RuntimeError if REDIS_URL is not set or connection fails."""
     redis_url = os.environ.get("REDIS_URL", "").strip()
     if not redis_url:
-        return None
-    try:
-        import redis
-        client = redis.Redis.from_url(redis_url, decode_responses=True, socket_timeout=5)
-        client.ping()
-        return client
-    except Exception as exc:
-        logger.warning("Could not connect to Redis (%s). Falling back to local file.", exc)
-        return None
+        raise RuntimeError(
+            "REDIS_URL environment variable is required. "
+            "Set it to your Upstash Redis connection string."
+        )
+    import redis
+    client = redis.Redis.from_url(redis_url, decode_responses=True, socket_timeout=5)
+    client.ping()
+    return client
 
 
 def load_seen_jobs() -> list[dict]:
     """
-    Load the seen-jobs list from Upstash Redis (if configured) or local disk.
+    Load the seen-jobs list from Upstash Redis.
     Returns a list of {"url": str, "seen_at": str} dicts.
-    Returns [] if missing or corrupt.
+    Returns [] if key is missing.
     """
     r = _get_redis_client()
-    if r:
-        try:
-            val = r.get("job_alert:seen_jobs")
-            if val:
-                data = json.loads(val)
-                logger.info("Loaded %d seen jobs from Upstash Redis", len(data))
-                return data
-            return []
-        except Exception as exc:
-            logger.warning("Error reading seen_jobs from Redis: %s", exc)
-
-    if not os.path.exists(SEEN_JOBS_FILE):
-        return []
-
-    try:
-        with open(SEEN_JOBS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        # Handle legacy format: plain list of URL strings
-        if data and isinstance(data[0], str):
-            logger.info("Migrating legacy seen_jobs format to timestamped entries")
-            now = datetime.now(timezone.utc).isoformat()
-            data = [{"url": url, "seen_at": now} for url in data]
+    val = r.get("job_alert:seen_jobs")
+    if val:
+        data = json.loads(val)
+        logger.info("Loaded %d seen jobs from Upstash Redis", len(data))
         return data
-    except (json.JSONDecodeError, IOError) as exc:
-        logger.warning("Could not load %s: %s — starting fresh", SEEN_JOBS_FILE, exc)
-        return []
+    return []
 
 
 def save_seen_jobs(seen: list[dict]) -> None:
-    """Save the seen-jobs list to Upstash Redis (if configured) or local disk."""
+    """Save the seen-jobs list to Upstash Redis."""
     r = _get_redis_client()
-    if r:
-        try:
-            r.set("job_alert:seen_jobs", json.dumps(seen, ensure_ascii=False))
-            logger.info("Saved %d entries to Upstash Redis", len(seen))
-            return
-        except Exception as exc:
-            logger.warning("Error saving seen_jobs to Redis: %s — saving to local file instead", exc)
+    r.set("job_alert:seen_jobs", json.dumps(seen, ensure_ascii=False))
+    logger.info("Saved %d entries to Upstash Redis", len(seen))
 
-    with open(SEEN_JOBS_FILE, "w", encoding="utf-8") as f:
-        json.dump(seen, f, indent=2, ensure_ascii=False)
-    logger.info("Saved %d entries to %s", len(seen), SEEN_JOBS_FILE)
+
+def save_run_summary(summary: dict) -> None:
+    """Persist the latest run summary to Redis for the dashboard to read."""
+    r = _get_redis_client()
+    r.set("job_alert:last_summary", json.dumps(summary, ensure_ascii=False))
+    total_runs = r.incr("job_alert:total_runs")
+    summary["total_runs"] = total_runs
+    logger.info("Saved run summary to Upstash Redis (total runs: %d)", total_runs)
+
+
+def load_run_summary() -> dict:
+    """Load the latest run summary from Redis."""
+    r = _get_redis_client()
+    val = r.get("job_alert:last_summary")
+    summary = json.loads(val) if val else {}
+    total_runs = r.get("job_alert:total_runs")
+    summary["total_runs"] = int(total_runs) if total_runs else 0
+    return summary
 
 
 
@@ -739,11 +716,10 @@ def get_telegram_credentials() -> tuple[str, str]:
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 
     if not token or not chat_id:
-        logger.error(
+        raise RuntimeError(
             "Missing Telegram credentials. "
             "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID environment variables."
         )
-        sys.exit(1)
 
     return token, chat_id
 
@@ -903,7 +879,7 @@ def run_job_alert_pipeline() -> dict:
             new_jobs.append(job)
             seen_urls.add(job["url"])
 
-        delay = random.uniform(1, 3)
+        delay = random.uniform(0.3, 0.5)
         logger.info("Waiting %.1fs before next query...", delay)
         time.sleep(delay)
 
@@ -928,7 +904,7 @@ def run_job_alert_pipeline() -> dict:
             new_jobs.append(job)
             seen_urls.add(job["url"])
 
-        time.sleep(random.uniform(1, 2))
+        time.sleep(random.uniform(0.3, 0.5))
 
     # Fetch, filter, deduplicate BAYT JOBS
     for bquery in BAYT_QUERIES:
@@ -951,7 +927,7 @@ def run_job_alert_pipeline() -> dict:
             new_jobs.append(job)
             seen_urls.add(job["url"])
 
-        time.sleep(random.uniform(1, 2))
+        time.sleep(random.uniform(0.3, 0.5))
 
     # Fetch, filter, deduplicate LINKEDIN POSTS
     total_posts_fetched = 0
@@ -973,7 +949,7 @@ def run_job_alert_pipeline() -> dict:
             new_posts.append(post)
             seen_urls.add(post["url"])
 
-        delay = random.uniform(2, 4)
+        delay = random.uniform(0.5, 1.0)
         logger.info("Waiting %.1fs before next DuckDuckGo query...", delay)
         time.sleep(delay)
 
@@ -1022,6 +998,9 @@ def run_job_alert_pipeline() -> dict:
         "telegram_alerts_sent": sent_count,
         "total_seen_entries": len(seen_jobs),
     }
+
+    # Persist run summary to Redis for the dashboard
+    save_run_summary(summary)
 
     logger.info("=" * 50)
     logger.info("RUN SUMMARY")
