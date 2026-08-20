@@ -282,10 +282,6 @@ async def dashboard():
                     <span class="detail-val">{last_summary.get('total_jobs_fetched', 0)}</span>
                 </div>
                 <div class="detail-row">
-                    <span class="detail-label">Posts Fetched (Last Run)</span>
-                    <span class="detail-val">{last_summary.get('total_posts_fetched', 0)}</span>
-                </div>
-                <div class="detail-row">
                     <span class="detail-label">New Jobs Found (Last Run)</span>
                     <span class="detail-val">{last_summary.get('new_jobs_found', 0)}</span>
                 </div>

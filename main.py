@@ -31,14 +31,17 @@ except ImportError:
 # Configuration — edit these to customise your alerts
 # ---------------------------------------------------------------------------
 
-# LinkedIn search queries for Egypt (kept lean for serverless time limits)
+# LinkedIn search queries for Egypt
 SEARCH_QUERIES = [
     {"keywords": ".NET", "location": "Egypt"},
     {"keywords": "C#", "location": "Egypt"},
     {"keywords": "ASP.NET", "location": "Egypt"},
+    {"keywords": "Software Engineer .NET", "location": "Egypt"},
+    {"keywords": "Full Stack .NET", "location": "Egypt"},
+    {"keywords": "Backend .NET", "location": "Egypt"},
+    {"keywords": "C# developer", "location": "Cairo, Egypt"},
 ]
 
-# Expanded Tech Keywords
 # Strict .NET Tech Keywords (only explicit .NET / C# technologies)
 TECH_KEYWORDS = [
     "c#", ".net", "asp.net", "dotnet", "dot net",
@@ -46,7 +49,7 @@ TECH_KEYWORDS = [
     "blazor", "aspnet",
 ]
 
-# Expanded Role Keywords
+# Role Keywords
 ROLE_KEYWORDS = [
     "developer", "backend", "back-end", "fullstack", "full-stack",
     "engineer", "software", "architect", "lead", "senior",
@@ -58,14 +61,6 @@ EGYPT_LOCATIONS = [
     "egypt", "cairo", "giza", "maadi", "smart village",
     "october", "6th of october", "6 october", "nasr city",
     "heliopolis", "mansoura", "new cairo", "sheikh zayed",
-]
-
-# DuckDuckGo search queries for LinkedIn posts (using site:linkedin.com/posts)
-POST_SEARCH_QUERIES = [
-    'site:linkedin.com/posts ".NET" developer Egypt hiring',
-    'site:linkedin.com/posts "C#" developer Cairo hiring',
-    'site:linkedin.com/posts dotnet Egypt hiring',
-    'site:linkedin.com/posts "ASP.NET" Egypt hiring',
 ]
 
 # Deduplication settings
@@ -223,290 +218,7 @@ def _extract_job_from_card(card) -> dict | None:
     }
 
 
-# ========================== WUZZUF & BAYT SCRAPING =========================
 
-
-WUZZUF_QUERIES = [".NET", "C#", "ASP.NET"]
-BAYT_QUERIES = ["net", "c-sharp", "asp-net"]
-
-
-def fetch_wuzzuf_jobs(keyword: str) -> list[dict]:
-    """
-    Scrape Wuzzuf.net Egypt for jobs matching keyword.
-    """
-    url = f"https://wuzzuf.net/search/jobs/?q={quote_plus(keyword)}&a=hpb"
-    logger.info("Fetching Wuzzuf jobs: %s", url)
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=8)
-        if resp.status_code != 200:
-            logger.warning("Wuzzuf HTTP status %d for query %s", resp.status_code, keyword)
-            return []
-    except Exception as exc:
-        logger.warning("Failed to fetch Wuzzuf query %s: %s", keyword, exc)
-        return []
-
-    soup = BeautifulSoup(resp.text, "lxml")
-    jobs: list[dict] = []
-
-    # Find job title links / containers
-    title_links = soup.find_all("a", href=re.compile(r"/jobs/p/"))
-    for link in title_links:
-        title = link.get_text(strip=True)
-        if not title:
-            continue
-
-        href = link["href"].strip()
-        full_url = href if href.startswith("http") else f"https://wuzzuf.net{href}"
-        if "?" in full_url:
-            full_url = full_url.split("?")[0]
-
-        card = link.find_parent(["div", "li", "td"]) or link.parent
-        comp_el = (
-            card.find("a", class_=re.compile(r"(css-17s97q8|company)"))
-            if card else None
-        )
-        company = comp_el.get_text(strip=True) if comp_el else "Wuzzuf Employer"
-        company = re.sub(r"\s*[-|]\s*$", "", company)
-
-        loc_el = (
-            card.find("span", class_=re.compile(r"(location|css-5x9x18|css-1552x71)"))
-            if card else None
-        )
-        location = loc_el.get_text(strip=True) if loc_el else "Egypt"
-
-        jobs.append({
-            "title": title,
-            "company": company,
-            "location": location,
-            "url": full_url,
-            "source": "Wuzzuf",
-        })
-
-    # Deduplicate within batch
-    seen = set()
-    unique = []
-    for j in jobs:
-        if j["url"] not in seen:
-            seen.add(j["url"])
-            unique.append(j)
-
-    logger.info("Parsed %d jobs from Wuzzuf for query: %s", len(unique), keyword)
-    return unique
-
-
-def fetch_bayt_jobs(query: str) -> list[dict]:
-    """
-    Scrape Bayt.com Egypt for jobs matching query.
-    """
-    url = f"https://www.bayt.com/en/egypt/jobs/{query}-jobs/"
-    logger.info("Fetching Bayt jobs: %s", url)
-    session = requests.Session()
-    bayt_headers = {
-        **HEADERS,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Referer": "https://www.bayt.com/en/egypt/jobs/",
-    }
-    try:
-        resp = session.get(url, headers=bayt_headers, timeout=8)
-        if resp.status_code != 200:
-            logger.warning("Bayt HTTP status %d for query %s", resp.status_code, query)
-            return []
-    except Exception as exc:
-        logger.warning("Failed to fetch Bayt query %s: %s", query, exc)
-        return []
-
-    soup = BeautifulSoup(resp.text, "lxml")
-    jobs: list[dict] = []
-
-    # Find job titles in Bayt HTML
-    title_els = soup.find_all("h2", class_=re.compile(r"jb-title"))
-    for h2 in title_els:
-        link = h2.find("a", href=True)
-        if not link:
-            continue
-
-        title = link.get_text(strip=True)
-        href = link["href"].strip()
-        full_url = href if href.startswith("http") else f"https://www.bayt.com{href}"
-        if "?" in full_url:
-            full_url = full_url.split("?")[0]
-
-        card = h2.find_parent(["li", "div", "article"]) or h2.parent
-        comp_el = card.find("b", class_=re.compile(r"jb-company")) if card else None
-        company = comp_el.get_text(strip=True) if comp_el else "Bayt Employer"
-
-        loc_el = card.find("span", class_=re.compile(r"jb-loc")) if card else None
-        location = loc_el.get_text(strip=True) if loc_el else "Egypt"
-
-        jobs.append({
-            "title": title,
-            "company": company,
-            "location": location,
-            "url": full_url,
-            "source": "Bayt",
-        })
-
-    # Deduplicate within batch
-    seen = set()
-    unique = []
-    for j in jobs:
-        if j["url"] not in seen:
-            seen.add(j["url"])
-            unique.append(j)
-
-    logger.info("Parsed %d jobs from Bayt for query: %s", len(unique), query)
-    return unique
-
-
-# ========================== LINKEDIN POST SCRAPING (via DuckDuckGo) ========
-
-
-def build_ddg_search_url(query: str) -> str:
-    """
-    Build a DuckDuckGo HTML search URL for finding LinkedIn posts.
-    """
-    encoded = quote_plus(query)
-    return f"https://html.duckduckgo.com/html/?q={encoded}"
-
-
-def fetch_linkedin_posts(query: str) -> list[dict]:
-    """
-    Search DuckDuckGo HTML for LinkedIn posts matching the query using POST form submit.
-    Extracts post URLs, author names, and text snippets from results.
-
-    Returns a list of dicts: {author, snippet, url}
-    """
-    url = "https://html.duckduckgo.com/html/"
-    ddg_headers = {
-        **HEADERS,
-        "Origin": "https://html.duckduckgo.com",
-        "Referer": "https://html.duckduckgo.com/",
-        "Content-Type": "application/x-www-form-urlencoded",
-    }
-
-    try:
-        logger.info("Fetching posts via DuckDuckGo POST: %s", query)
-        response = requests.post(url, data={"q": query, "b": ""}, headers=ddg_headers, timeout=8)
-        response.raise_for_status()
-    except requests.RequestException as exc:
-        logger.warning("HTTP error fetching DuckDuckGo results: %s", exc)
-        return []
-
-    return _parse_ddg_results(response.text, query)
-
-
-def _parse_ddg_results(html: str, query: str) -> list[dict]:
-    """
-    Extract LinkedIn post links and snippets from DuckDuckGo HTML search results.
-    Only keeps results that link to linkedin.com/posts/, /feed/update/, or /pulse/.
-    """
-    soup = BeautifulSoup(html, "lxml")
-    posts: list[dict] = []
-
-    # DuckDuckGo HTML search results use <a> tags with class result__a or result__url
-    for link in soup.find_all("a", href=True):
-        href = link["href"]
-        clean_url = _extract_clean_linkedin_url(href)
-        if not clean_url:
-            continue
-
-        title_text = link.get_text(strip=True)
-
-        # Look for snippet in parent result container
-        parent = link.find_parent(["div", "td", "tr"])
-        snippet_el = (
-            parent.find("a", class_=re.compile(r"snippet"))
-            or parent.find("div", class_=re.compile(r"snippet"))
-            or parent.find("td", class_=re.compile(r"snippet"))
-        ) if parent else None
-
-        snippet = snippet_el.get_text(strip=True) if snippet_el else title_text
-
-        author = _extract_author_from_url(clean_url)
-        if not author and title_text:
-            author = title_text.split(" - ")[0].split(" on ")[0].strip()
-
-        posts.append({
-            "author": author or "Unknown",
-            "snippet": snippet[:200] if snippet else "",
-            "url": clean_url,
-        })
-
-    # Deduplicate by URL within this batch
-    seen = set()
-    unique_posts = []
-    for p in posts:
-        if p["url"] not in seen:
-            seen.add(p["url"])
-            unique_posts.append(p)
-
-    logger.info("Found %d LinkedIn posts via DuckDuckGo for query: %s", len(unique_posts), query)
-    return unique_posts
-
-
-def _extract_clean_linkedin_url(href: str) -> str | None:
-    """
-    Extract and clean a LinkedIn post URL from a result link.
-    Handles DuckDuckGo redirects (/l/?uddg=...) and Google redirects (/url?q=...).
-    Returns None if the URL is not a LinkedIn post/feed update/article.
-    """
-    from urllib.parse import urlparse, parse_qs, unquote
-
-    # DuckDuckGo redirect format: /l/?uddg=https%3A%2F%2Fwww.linkedin.com%2Fposts%2F...
-    if "uddg=" in href:
-        parsed = urlparse(href)
-        params = parse_qs(parsed.query)
-        if "uddg" in params:
-            href = params["uddg"][0]
-
-    # Google redirect format
-    if "/url?" in href:
-        parsed = urlparse(href)
-        params = parse_qs(parsed.query)
-        if "q" in params:
-            href = params["q"][0]
-
-    href = unquote(href)
-
-    # Keep LinkedIn posts, feed updates, or pulse articles
-    is_post_link = (
-        "linkedin.com/posts/" in href
-        or "linkedin.com/feed/update/" in href
-        or "linkedin.com/pulse/" in href
-    )
-    if not is_post_link:
-        return None
-
-    # Strip tracking query params
-    if "?" in href:
-        href = href.split("?")[0]
-
-    return href
-
-
-def _extract_author_from_url(url: str) -> str:
-    """
-    Extract the author name from a LinkedIn post URL.
-    URLs follow the pattern: linkedin.com/posts/author-name_rest-of-slug
-    """
-    try:
-        slug = url.split("/posts/")[1]
-        author_slug = slug.split("_")[0].split("-activity")[0]
-        return author_slug.replace("-", " ").title()
-    except (IndexError, AttributeError):
-        return "Unknown"
-
-
-def post_matches_tech_keywords(post: dict) -> bool:
-    """
-    Check if a LinkedIn post mentions at least one tech keyword.
-    """
-    text = " ".join([
-        post.get("author", ""),
-        post.get("snippet", ""),
-    ]).lower()
-
-    return any(_keyword_pattern(kw).search(text) for kw in TECH_KEYWORDS)
 
 
 # ========================== KEYWORD FILTERING ==============================
@@ -585,19 +297,15 @@ def matches_location(job: dict) -> bool:
     """
     EGYPT ONLY ALLOWLIST:
     Only accepts jobs explicitly located in an Egyptian city/region (EGYPT_LOCATIONS),
-    or hosted on eg.linkedin.com, wuzzuf.net, or bayt.com domain.
+    or hosted on eg.linkedin.com.
     """
-    source = job.get("source", "")
-    if source in ("Wuzzuf", "Bayt"):
-        return True
-
     title = job.get("title", "").lower()
     location = job.get("location", "").lower()
     url = job.get("url", "").lower()
     full_text = f"{title} {location}"
 
     is_egypt_city = any(loc in full_text for loc in EGYPT_LOCATIONS)
-    is_egypt_domain = any(dom in url for dom in ["eg.linkedin.com", "wuzzuf.net", "bayt.com"])
+    is_egypt_domain = "eg.linkedin.com" in url
 
     return is_egypt_city or is_egypt_domain
 
@@ -739,25 +447,6 @@ def format_job_message(job: dict) -> str:
     return "\n".join(parts)
 
 
-def format_post_message(post: dict) -> str:
-    """
-    Format a LinkedIn post into a Telegram-friendly message.
-    """
-    snippet = post.get("snippet", "")
-    # Truncate long snippets to keep messages readable
-    if len(snippet) > 150:
-        snippet = snippet[:147] + "..."
-
-    parts = [
-        f"👤 <b>{_escape_html(post['author'])}</b>",
-    ]
-
-    if snippet:
-        parts.append(f"📝 {_escape_html(snippet)}")
-
-    parts.append(f"🔗 <a href=\"{post['url']}\">View Post</a>")
-
-    return "\n".join(parts)
 
 
 def _escape_html(text: str) -> str:
@@ -861,76 +550,6 @@ def run_job_alert_pipeline() -> dict:
         logger.info("Waiting %.1fs before next query...", delay)
         time.sleep(delay)
 
-    # Fetch, filter, deduplicate WUZZUF JOBS
-    for wquery in WUZZUF_QUERIES:
-        wjobs = fetch_wuzzuf_jobs(wquery)
-        total_fetched += len(wjobs)
-
-        for job in wjobs:
-            if not matches_location(job):
-                continue
-            if job["url"] in seen_urls:
-                continue
-
-            is_match, matched_tech, matched_roles = matches_keywords(job)
-            if not is_match:
-                continue
-
-            job["matched_tech"] = matched_tech
-            job["matched_roles"] = matched_roles
-            total_passed_filter += 1
-            new_jobs.append(job)
-            seen_urls.add(job["url"])
-
-        time.sleep(random.uniform(0.3, 0.5))
-
-    # Fetch, filter, deduplicate BAYT JOBS
-    for bquery in BAYT_QUERIES:
-        bjobs = fetch_bayt_jobs(bquery)
-        total_fetched += len(bjobs)
-
-        for job in bjobs:
-            if not matches_location(job):
-                continue
-            if job["url"] in seen_urls:
-                continue
-
-            is_match, matched_tech, matched_roles = matches_keywords(job)
-            if not is_match:
-                continue
-
-            job["matched_tech"] = matched_tech
-            job["matched_roles"] = matched_roles
-            total_passed_filter += 1
-            new_jobs.append(job)
-            seen_urls.add(job["url"])
-
-        time.sleep(random.uniform(0.3, 0.5))
-
-    # Fetch, filter, deduplicate LINKEDIN POSTS
-    total_posts_fetched = 0
-    total_posts_passed = 0
-    new_posts: list[dict] = []
-
-    for query in POST_SEARCH_QUERIES:
-        posts = fetch_linkedin_posts(query)
-        total_posts_fetched += len(posts)
-
-        for post in posts:
-            if not post_matches_tech_keywords(post):
-                continue
-            total_posts_passed += 1
-
-            if post["url"] in seen_urls:
-                continue
-
-            new_posts.append(post)
-            seen_urls.add(post["url"])
-
-        delay = random.uniform(0.5, 1.0)
-        logger.info("Waiting %.1fs before next DuckDuckGo query...", delay)
-        time.sleep(delay)
-
     # Send notifications
     sent_count = 0
 
@@ -940,39 +559,24 @@ def run_job_alert_pipeline() -> dict:
             sent_count += 1
         else:
             logger.warning("Failed to send alert for: %s", job["title"])
-        if i < len(new_jobs) - 1 or new_posts:
-            time.sleep(1)
-
-    for i, post in enumerate(new_posts):
-        message = format_post_message(post)
-        if send_telegram_message(message, token, chat_id):
-            sent_count += 1
-        else:
-            logger.warning("Failed to send alert for post by: %s", post["author"])
-        if i < len(new_posts) - 1:
-            time.sleep(1)
+        if i < len(new_jobs) - 1:
+            time.sleep(0.5)
 
     # Persist seen jobs
     now = datetime.now(timezone.utc).isoformat()
     for job in new_jobs:
         seen_jobs.append({"url": job["url"], "seen_at": now})
-    for post in new_posts:
-        seen_jobs.append({"url": post["url"], "seen_at": now})
     save_seen_jobs(seen_jobs)
 
     # Summary
     end_time = datetime.now(timezone.utc)
     duration_secs = (end_time - start_time).total_seconds()
-    total_new = len(new_jobs) + len(new_posts)
-
     summary = {
         "status": "success",
         "last_run_at": end_time.isoformat(),
         "duration_seconds": round(duration_secs, 1),
         "total_jobs_fetched": total_fetched,
         "new_jobs_found": len(new_jobs),
-        "total_posts_fetched": total_posts_fetched,
-        "new_posts_found": len(new_posts),
         "telegram_alerts_sent": sent_count,
         "total_seen_entries": len(seen_jobs),
     }
@@ -986,8 +590,6 @@ def run_job_alert_pipeline() -> dict:
     logger.info("Duration:               %.1fs", duration_secs)
     logger.info("Jobs fetched:          %d", total_fetched)
     logger.info("New job listings:      %d", len(new_jobs))
-    logger.info("Posts fetched:         %d", total_posts_fetched)
-    logger.info("New posts:             %d", len(new_posts))
     logger.info("Telegram alerts sent:  %d", sent_count)
     logger.info("Seen entries:          %d", len(seen_jobs))
     logger.info("=" * 50)
