@@ -19,6 +19,7 @@ from urllib.parse import quote_plus
 
 import requests
 from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
     from dotenv import load_dotenv
@@ -249,7 +250,7 @@ def fetch_job_description(job_url: str) -> tuple[str, str]:
     api_url = f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}"
 
     try:
-        resp = requests.get(api_url, headers=HEADERS, timeout=10)
+        resp = requests.get(api_url, headers=HEADERS, timeout=4)
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, "lxml")
             desc_el = (
@@ -544,7 +545,8 @@ def run_job_alert_pipeline() -> dict:
     # Fetch, filter, deduplicate JOB LISTINGS
     total_fetched = 0
     total_passed_filter = 0
-    new_jobs: list[dict] = []
+    candidate_jobs: list[dict] = []
+    candidate_urls = set()
 
     for query in SEARCH_QUERIES:
         url = build_linkedin_url(query)
@@ -555,23 +557,46 @@ def run_job_alert_pipeline() -> dict:
             if not matches_location(job):
                 continue
 
-            if job["url"] in seen_urls:
+            if job["url"] in seen_urls or job["url"] in candidate_urls:
                 continue
 
-            is_match, matched_tech, matched_roles = matches_keywords(job)
-            if not is_match:
-                logger.debug("Job failed keyword filter: %s", job["title"])
-                continue
+            candidate_urls.add(job["url"])
+            candidate_jobs.append(job)
 
-            job["matched_tech"] = matched_tech
-            job["matched_roles"] = matched_roles
-            total_passed_filter += 1
-            new_jobs.append(job)
-            seen_urls.add(job["url"])
-
-        delay = random.uniform(0.3, 0.5)
-        logger.info("Waiting %.1fs before next query...", delay)
+        delay = random.uniform(0.2, 0.4)
         time.sleep(delay)
+
+    # Enrich candidate jobs with full descriptions in parallel (fast)
+    if candidate_jobs:
+        logger.info("Enriching %d candidate jobs with descriptions in parallel...", len(candidate_jobs))
+
+        def _enrich_job(j: dict) -> dict:
+            desc, snippet = fetch_job_description(j["url"])
+            j["description"] = desc
+            j["snippet"] = snippet
+            return j
+
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            futures = [executor.submit(_enrich_job, job) for job in candidate_jobs]
+            for f in as_completed(futures):
+                try:
+                    f.result()
+                except Exception as exc:
+                    logger.debug("Parallel description fetch error: %s", exc)
+
+    # Filter enriched jobs by tech and role keywords
+    new_jobs: list[dict] = []
+    for job in candidate_jobs:
+        is_match, matched_tech, matched_roles = matches_keywords(job)
+        if not is_match:
+            logger.debug("Job failed keyword filter: %s", job["title"])
+            continue
+
+        job["matched_tech"] = matched_tech
+        job["matched_roles"] = matched_roles
+        total_passed_filter += 1
+        new_jobs.append(job)
+        seen_urls.add(job["url"])
 
     # Send notifications
     sent_count = 0
