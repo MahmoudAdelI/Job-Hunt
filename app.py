@@ -1,5 +1,5 @@
 """
-FastAPI Web App for .NET Job Alert Scraper (Vercel Serverless)
+FastAPI Web App for .NET & Node.js Job Alert Scraper (Vercel Serverless)
 ===============================================================
 Stateless serverless app deployed on Vercel.
 All state (seen jobs, run stats) is stored in Upstash Redis.
@@ -39,8 +39,8 @@ RUN_INTERVAL_MINUTES = int(os.environ.get("RUN_INTERVAL_MINUTES", "5"))
 # FastAPI App Setup
 # ---------------------------------------------------------------------------
 app = FastAPI(
-    title=".NET Job Alert Scraper Service",
-    description="Automated job scraper with Telegram alerts, deployed on Vercel.",
+    title=".NET & Node.js Job Alert Scraper Service",
+    description="Automated multi-stack job scraper with Telegram alerts, deployed on Vercel.",
     redirect_slashes=False,
 )
 
@@ -81,7 +81,7 @@ async def health_check():
 
     return {
         "status": "healthy",
-        "service": ".NET Job Alert Scraper",
+        "service": ".NET & Node.js Job Alert Scraper",
         "interval_minutes": RUN_INTERVAL_MINUTES,
         "total_runs": summary.get("total_runs", 0),
         "last_run_at": summary.get("last_run_at"),
@@ -161,8 +161,8 @@ async def dashboard():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>.NET Job Alert Dashboard</title>
-        <meta name="description" content="Automated .NET job scraper dashboard with Telegram alerts for Egypt-based positions.">
+        <title>.NET & Node.js Job Alert Dashboard</title>
+        <meta name="description" content="Automated .NET & Node.js job scraper dashboard with Telegram alerts for Egypt-based positions.">
         <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
         <style>
             :root {{
@@ -258,7 +258,7 @@ async def dashboard():
         <div class="container">
             <div class="header">
                 <div>
-                    <h1>🚀 .NET Job Alert Scraper</h1>
+                    <h1>🚀 .NET & Node.js Job Alert Scraper</h1>
                     <p style="color: var(--text-muted); font-size: 0.9rem; margin-top: 0.25rem;">Vercel Serverless + cron-job.org (every {RUN_INTERVAL_MINUTES} mins)</p>
                 </div>
                 <div>{status_badge}</div>
@@ -276,9 +276,14 @@ async def dashboard():
                     <div class="card-sub">Stored in Upstash Redis</div>
                 </div>
                 <div class="card">
-                    <div class="card-title">Last Run Alerts Sent</div>
-                    <div class="card-value">{last_summary.get('telegram_alerts_sent', 0)}</div>
-                    <div class="card-sub">Duration: {last_summary.get('duration_seconds', 0)}s</div>
+                    <div class="card-title">.NET Alerts Sent</div>
+                    <div class="card-value">{last_summary.get('dotnet_alerts_sent', 0)}</div>
+                    <div class="card-sub">Last run → Channel</div>
+                </div>
+                <div class="card">
+                    <div class="card-title">Node.js Alerts Sent</div>
+                    <div class="card-value">{last_summary.get('nodejs_alerts_sent', 0)}</div>
+                    <div class="card-sub">Last run → Personal</div>
                 </div>
             </div>
 

@@ -1,9 +1,9 @@
 """
 Job Alert Automation Script
 ============================
-Scrapes LinkedIn job search results for .NET-related positions,
+Scrapes LinkedIn job search results for .NET and Node.js positions,
 filters by keyword groups, deduplicates against previously seen jobs,
-and sends new matches to a Telegram bot.
+and sends new matches to Telegram (.NET → channel, Node.js → personal chat).
 
 Designed to run on a GitHub Actions scheduled workflow (every 2 hours).
 """
@@ -32,7 +32,7 @@ except ImportError:
 # Configuration — edit these to customise your alerts
 # ---------------------------------------------------------------------------
 
-# LinkedIn search queries for Egypt
+# LinkedIn search queries for Egypt — .NET focused
 SEARCH_QUERIES = [
     {"keywords": ".NET", "location": "Egypt"},
     {"keywords": "C#", "location": "Egypt"},
@@ -43,11 +43,28 @@ SEARCH_QUERIES = [
     {"keywords": "C# developer", "location": "Cairo, Egypt"},
 ]
 
+# LinkedIn search queries for Egypt — General / Node.js focused
+GENERAL_SEARCH_QUERIES = [
+    {"keywords": "Full Stack Developer", "location": "Egypt"},
+    {"keywords": "Web Developer", "location": "Egypt"},
+    {"keywords": "Software Engineer", "location": "Egypt"},
+    {"keywords": "Backend Developer", "location": "Egypt"},
+    {"keywords": "JavaScript Developer", "location": "Egypt"},
+]
+
 # Strict .NET Tech Keywords (only explicit .NET / C# technologies)
-TECH_KEYWORDS = [
+DOTNET_TECH_KEYWORDS = [
     "c#", ".net", "asp.net", "dotnet", "dot net",
     ".net core", "ef core", "entity framework",
     "blazor", "aspnet",
+]
+
+# Node.js / JS Backend Tech Keywords
+NODE_TECH_KEYWORDS = [
+    "node", "node.js", "nodejs",
+    "express", "express.js",
+    "nestjs",
+    "javascript", "typescript",
 ]
 
 # Role Keywords
@@ -267,11 +284,15 @@ def fetch_job_description(job_url: str) -> tuple[str, str]:
     return "", ""
 
 
-def matches_keywords(job: dict) -> tuple[bool, list[str], list[str]]:
+def matches_keywords(job: dict) -> tuple[str | None, list[str], list[str]]:
     """
     Check if a job matches keyword filter criteria.
 
-    Returns tuple: (is_match, matched_tech_keywords, matched_role_keywords).
+    Returns tuple: (stack_category, matched_tech_keywords, matched_role_keywords).
+    stack_category is 'dotnet', 'nodejs', or None (no match).
+
+    Priority: if a job matches .NET keywords, it is categorised as 'dotnet'
+    even if it also matches Node.js keywords (avoids duplicate alerts).
     """
     text = " ".join([
         job.get("title", ""),
@@ -280,17 +301,30 @@ def matches_keywords(job: dict) -> tuple[bool, list[str], list[str]]:
         job.get("description", ""),
     ]).lower()
 
-    matched_tech = [
-        kw for kw in TECH_KEYWORDS
-        if _keyword_pattern(kw).search(text)
-    ]
     matched_roles = [
         kw for kw in ROLE_KEYWORDS
         if _keyword_pattern(kw).search(text)
     ]
+    if not matched_roles:
+        return None, [], []
 
-    is_match = bool(matched_tech) and bool(matched_roles)
-    return is_match, matched_tech, matched_roles
+    # Check .NET first (higher priority)
+    matched_dotnet = [
+        kw for kw in DOTNET_TECH_KEYWORDS
+        if _keyword_pattern(kw).search(text)
+    ]
+    if matched_dotnet:
+        return "dotnet", matched_dotnet, matched_roles
+
+    # Then check Node.js
+    matched_node = [
+        kw for kw in NODE_TECH_KEYWORDS
+        if _keyword_pattern(kw).search(text)
+    ]
+    if matched_node:
+        return "nodejs", matched_node, matched_roles
+
+    return None, [], []
 
 
 
@@ -421,13 +455,15 @@ def prune_old_entries(seen: list[dict]) -> list[dict]:
 # ========================== TELEGRAM NOTIFICATIONS =========================
 
 
-def get_telegram_credentials() -> tuple[str, str]:
+def get_telegram_credentials() -> tuple[str, str, str]:
     """
     Read Telegram credentials from environment variables.
-    Exits with a clear error if either is missing.
+    Returns (token, dotnet_chat_id, nodejs_chat_id).
+    Exits with a clear error if required vars are missing.
     """
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    nodejs_chat_id = os.environ.get("TELEGRAM_NODEJS_CHAT_ID", "").strip()
 
     if not token or not chat_id:
         raise RuntimeError(
@@ -435,7 +471,12 @@ def get_telegram_credentials() -> tuple[str, str]:
             "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID environment variables."
         )
 
-    return token, chat_id
+    if not nodejs_chat_id:
+        logger.warning(
+            "TELEGRAM_NODEJS_CHAT_ID not set — Node.js job alerts will be skipped."
+        )
+
+    return token, chat_id, nodejs_chat_id
 
 
 def format_job_message(job: dict) -> str:
@@ -528,13 +569,14 @@ def run_job_alert_pipeline() -> dict:
     Orchestrates the full job alert pipeline and returns execution summary dict:
     1. Validate Telegram credentials
     2. Load seen jobs & prune old entries
-    3. For each query: fetch → filter → deduplicate
-    4. Send Telegram notifications for new matches
-    5. Save updated seen-jobs list
-    6. Return summary stats dict
+    3. For each query (both .NET and general): fetch → filter → deduplicate
+    4. Classify new jobs by stack (dotnet / nodejs)
+    5. Route notifications: .NET → channel, Node.js → personal chat
+    6. Save updated seen-jobs list
+    7. Return summary stats dict
     """
     start_time = datetime.now(timezone.utc)
-    token, chat_id = get_telegram_credentials()
+    token, channel_chat_id, nodejs_chat_id = get_telegram_credentials()
     logger.info("Telegram credentials loaded successfully")
 
     # Load & prune seen jobs
@@ -542,13 +584,14 @@ def run_job_alert_pipeline() -> dict:
     seen_jobs = prune_old_entries(seen_jobs)
     seen_urls = {entry["url"] for entry in seen_jobs}
 
-    # Fetch, filter, deduplicate JOB LISTINGS
+    # Fetch, filter, deduplicate JOB LISTINGS from ALL query lists
     total_fetched = 0
-    total_passed_filter = 0
     candidate_jobs: list[dict] = []
     candidate_urls = set()
 
-    for query in SEARCH_QUERIES:
+    all_queries = SEARCH_QUERIES + GENERAL_SEARCH_QUERIES
+
+    for query in all_queries:
         url = build_linkedin_url(query)
         jobs = fetch_jobs(url)
         total_fetched += len(jobs)
@@ -584,31 +627,57 @@ def run_job_alert_pipeline() -> dict:
                 except Exception as exc:
                     logger.debug("Parallel description fetch error: %s", exc)
 
-    # Filter enriched jobs by tech and role keywords
-    new_jobs: list[dict] = []
+    # Filter enriched jobs by tech and role keywords, classify by stack
+    dotnet_jobs: list[dict] = []
+    nodejs_jobs: list[dict] = []
+
     for job in candidate_jobs:
-        is_match, matched_tech, matched_roles = matches_keywords(job)
-        if not is_match:
+        stack, matched_tech, matched_roles = matches_keywords(job)
+        if stack is None:
             logger.debug("Job failed keyword filter: %s", job["title"])
             continue
 
         job["matched_tech"] = matched_tech
         job["matched_roles"] = matched_roles
-        total_passed_filter += 1
-        new_jobs.append(job)
+        job["stack"] = stack
         seen_urls.add(job["url"])
 
-    # Send notifications
-    sent_count = 0
-
-    for i, job in enumerate(new_jobs):
-        message = format_job_message(job)
-        if send_telegram_message(message, token, chat_id):
-            sent_count += 1
+        if stack == "dotnet":
+            dotnet_jobs.append(job)
         else:
-            logger.warning("Failed to send alert for: %s", job["title"])
-        if i < len(new_jobs) - 1:
+            nodejs_jobs.append(job)
+
+    new_jobs = dotnet_jobs + nodejs_jobs
+
+    # Send notifications — .NET jobs → channel, Node.js jobs → personal chat
+    dotnet_sent = 0
+    nodejs_sent = 0
+
+    for i, job in enumerate(dotnet_jobs):
+        message = format_job_message(job)
+        if send_telegram_message(message, token, channel_chat_id):
+            dotnet_sent += 1
+        else:
+            logger.warning("Failed to send .NET alert for: %s", job["title"])
+        if i < len(dotnet_jobs) - 1:
             time.sleep(0.5)
+
+    if nodejs_chat_id:
+        for i, job in enumerate(nodejs_jobs):
+            message = format_job_message(job)
+            if send_telegram_message(message, token, nodejs_chat_id):
+                nodejs_sent += 1
+            else:
+                logger.warning("Failed to send Node.js alert for: %s", job["title"])
+            if i < len(nodejs_jobs) - 1:
+                time.sleep(0.5)
+    elif nodejs_jobs:
+        logger.warning(
+            "Skipping %d Node.js job alerts — TELEGRAM_NODEJS_CHAT_ID not set",
+            len(nodejs_jobs),
+        )
+
+    total_sent = dotnet_sent + nodejs_sent
 
     # Persist seen jobs
     now = datetime.now(timezone.utc).isoformat()
@@ -625,7 +694,11 @@ def run_job_alert_pipeline() -> dict:
         "duration_seconds": round(duration_secs, 1),
         "total_jobs_fetched": total_fetched,
         "new_jobs_found": len(new_jobs),
-        "telegram_alerts_sent": sent_count,
+        "dotnet_jobs_found": len(dotnet_jobs),
+        "nodejs_jobs_found": len(nodejs_jobs),
+        "dotnet_alerts_sent": dotnet_sent,
+        "nodejs_alerts_sent": nodejs_sent,
+        "telegram_alerts_sent": total_sent,
         "total_seen_entries": len(seen_jobs),
     }
 
@@ -637,8 +710,10 @@ def run_job_alert_pipeline() -> dict:
     logger.info("=" * 50)
     logger.info("Duration:               %.1fs", duration_secs)
     logger.info("Jobs fetched:          %d", total_fetched)
-    logger.info("New job listings:      %d", len(new_jobs))
-    logger.info("Telegram alerts sent:  %d", sent_count)
+    logger.info("New .NET jobs:         %d", len(dotnet_jobs))
+    logger.info("New Node.js jobs:      %d", len(nodejs_jobs))
+    logger.info(".NET alerts sent:      %d", dotnet_sent)
+    logger.info("Node.js alerts sent:   %d", nodejs_sent)
     logger.info("Seen entries:          %d", len(seen_jobs))
     logger.info("=" * 50)
 
