@@ -81,6 +81,11 @@ EGYPT_LOCATIONS = [
     "heliopolis", "mansoura", "new cairo", "sheikh zayed",
 ]
 
+# Excluded Companies — ignore any jobs from these companies (case-insensitive)
+EXCLUDED_COMPANIES = [
+    "xceed",
+]
+
 # Deduplication settings
 RETENTION_DAYS = 30
 
@@ -345,6 +350,25 @@ def matches_location(job: dict) -> bool:
     return is_egypt_city or is_egypt_domain
 
 
+def is_excluded_company(job: dict) -> bool:
+    """
+    Check if a job is from an excluded company.
+    Returns True if the company matches any entry in EXCLUDED_COMPANIES.
+    """
+    company = job.get("company", "").strip().lower()
+    if not company:
+        return False
+
+    for excluded in EXCLUDED_COMPANIES:
+        excluded_clean = excluded.strip().lower()
+        if not excluded_clean:
+            continue
+        if re.search(rf"\b{re.escape(excluded_clean)}", company, re.IGNORECASE):
+            return True
+
+    return False
+
+
 # ========================== DEDUPLICATION ==================================
 
 
@@ -600,6 +624,10 @@ def run_job_alert_pipeline() -> dict:
             if not matches_location(job):
                 continue
 
+            if is_excluded_company(job):
+                logger.debug("Skipping excluded company (%s): %s", job.get("company"), job.get("title"))
+                continue
+
             if job["url"] in seen_urls or job["url"] in candidate_urls:
                 continue
 
@@ -632,6 +660,9 @@ def run_job_alert_pipeline() -> dict:
     nodejs_jobs: list[dict] = []
 
     for job in candidate_jobs:
+        if is_excluded_company(job):
+            continue
+
         stack, matched_tech, matched_roles = matches_keywords(job)
         if stack is None:
             logger.debug("Job failed keyword filter: %s", job["title"])
